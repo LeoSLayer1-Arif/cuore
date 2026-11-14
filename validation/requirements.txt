@@ -1,0 +1,3 @@
+-r ../requirements.txt
+scikit-image        # only for the synthetic test face (public-domain NASA photo)
+websockets          # only for replay_backend.py --transport websocket
