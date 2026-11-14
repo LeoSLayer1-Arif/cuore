@@ -96,16 +96,27 @@ function renderComposure(d) {
   const progress = $("c-progress");
   if (b.ready) {
     progress.hidden = true;
-    $("c-note").textContent = state === null
+    let note = state === null
       ? "No current readings to compare."
       : state === "elevated" ? reasons(d).join(" · ") : "Within range of your baseline.";
+    if (c.blink_baseline_too_low) {
+      note += " Blink baseline is too low to judge a drop, so blinks aren't used this session.";
+    }
+    $("c-note").textContent = note;
   } else {
     progress.hidden = false;
     const secs = b.seconds_collected;
+    const waiting = b.waiting_for || [];
     $("c-bar").style.width = `${Math.min(100, ((secs || 0) / BASELINE_SEC) * 100)}%`;
-    $("c-note").textContent = secs === null
-      ? "Waiting for a good signal to start the baseline."
-      : `Learning your baseline: ${Math.floor(secs)} / ${BASELINE_SEC} s`;
+    if (secs === null) {
+      $("c-note").textContent = "Waiting for a good signal to start the baseline.";
+    } else if (secs >= BASELINE_SEC && waiting.includes("blink")) {
+      $("c-note").textContent = "Waiting for a full minute of blink data before using blinks.";
+    } else if (secs >= BASELINE_SEC && waiting.length) {
+      $("c-note").textContent = `Waiting for a first reading of: ${waiting.join(", ")}.`;
+    } else {
+      $("c-note").textContent = `Learning your baseline: ${Math.floor(secs)} / ${BASELINE_SEC} s`;
+    }
   }
 
   for (const r of ROWS) {
@@ -113,7 +124,9 @@ function renderComposure(d) {
     const flag = c[r.flag];
     tr.querySelector("[data-now]").textContent = d[r.now] === null ? "--" : fmt(d[r.now], r.digits) + r.unit;
     tr.querySelector("[data-base]").textContent = b[r.base] === null ? "--" : fmt(b[r.base], r.digits) + r.unit;
-    tr.querySelector("[data-flag]").textContent = flag === true ? "Flagged" : flag === false ? "OK" : "–";
+    const notJudged = r.flag === "blink_low" && c.blink_baseline_too_low;
+    tr.querySelector("[data-flag]").textContent =
+      flag === true ? "Flagged" : flag === false ? "OK" : notJudged ? "Too low" : "–";
     tr.classList.toggle("flagged", flag === true);
   }
 }

@@ -81,6 +81,10 @@ class Baseline:
     def mean(self, key):
         return self.sums[key] / self.counts[key] if self.counts[key] else None
 
+    def missing(self):
+        """Metrics with no baseline sample yet: any of "blink", "breath", "heart"."""
+        return [key for key, count in self.counts.items() if count == 0]
+
     def seconds_collected(self, now):
         return None if self.start is None else min(BASELINE_SEC, now - self.start)
 
@@ -91,7 +95,9 @@ def evaluate_composure(baseline_ready, base_blink, base_breath, base_heart,
 
     Each flag is True/False when the current reading exists, or None when it
     is missing (we can't say either way). blink_low needs both: below 60% of
-    baseline and at least BLINK_MIN_DROP blinks/min lower. Rule:
+    baseline and at least BLINK_MIN_DROP blinks/min lower. If the blink
+    baseline is under BLINK_MIN_DROP, a drop that size is impossible, so
+    blink_low is None ("can't tell") and blink_baseline_too_low is True. Rule:
       - "elevated" if blink_low is True on its own (blink is the most reliable
         signal, so it counts double), or if at least two of the three are True
       - "calm" otherwise
@@ -99,13 +105,18 @@ def evaluate_composure(baseline_ready, base_blink, base_breath, base_heart,
       - None if there are no current readings at all to compare
     """
     if not baseline_ready:
-        return {"state": "calibrating", "blink_low": None, "breath_high": None, "hr_high": None}
+        return {"state": "calibrating", "blink_low": None, "breath_high": None, "hr_high": None,
+                "blink_baseline_too_low": False}
 
     def compare(current, check):
         return None if current is None else bool(check(current))
 
-    blink_low = compare(blink, lambda v: v < BLINK_LOW_RATIO * base_blink
-                        and base_blink - v >= BLINK_MIN_DROP)
+    blink_baseline_too_low = base_blink < BLINK_MIN_DROP
+    if blink_baseline_too_low:
+        blink_low = None
+    else:
+        blink_low = compare(blink, lambda v: v < BLINK_LOW_RATIO * base_blink
+                            and base_blink - v >= BLINK_MIN_DROP)
     breath_high = compare(breath, lambda v: v > BREATH_HIGH_RATIO * base_breath)
     hr_high = compare(heart, lambda v: v > HR_HIGH_RATIO * base_heart)
 
@@ -116,7 +127,8 @@ def evaluate_composure(baseline_ready, base_blink, base_breath, base_heart,
         state = "elevated"
     else:
         state = "calm"
-    return {"state": state, "blink_low": blink_low, "breath_high": breath_high, "hr_high": hr_high}
+    return {"state": state, "blink_low": blink_low, "breath_high": breath_high, "hr_high": hr_high,
+            "blink_baseline_too_low": blink_baseline_too_low}
 
 
 # --------------------------------------------------------------------------
@@ -152,7 +164,7 @@ class SharedState:
             "shoulders_in_view": False,
             "average_heart_rate": None,
             "composure": evaluate_composure(False, None, None, None, None, None, None),
-            "baseline": {"ready": False, "seconds_collected": None,
+            "baseline": {"ready": False, "seconds_collected": None, "waiting_for": None,
                          "blink_rate": None, "breathing_rate": None, "heart_rate": None},
             "updated_at": None,
         }
@@ -349,8 +361,14 @@ def processing_loop(args, shared, stop):
             if ok:
                 shared.set_jpeg(jpeg.tobytes())
 
+            # The blink rate is a count over the last 60 s. Until 60 s have passed it is
+            # extrapolated from a few seconds and swings wildly (one blink in 10 s reads as
+            # 6/min), so only full-window blink rates go into the baseline.
+            blink_window_full = (blinks.start is not None
+                                 and now - blinks.start >= blinks.window_sec)
             if ticked:
-                baseline.add(now, status_code, blink_rate, resp_rate, live_bpm)
+                baseline.add(now, status_code, blink_rate if blink_window_full else None,
+                             resp_rate, live_bpm)
             composure = evaluate_composure(
                 baseline.ready, baseline.mean("blink"), baseline.mean("breath"),
                 baseline.mean("heart"), blink_rate, resp_rate, live_bpm)
@@ -381,6 +399,7 @@ def processing_loop(args, shared, stop):
                 composure=composure,
                 baseline={"ready": baseline.ready,
                           "seconds_collected": _num(baseline.seconds_collected(now)),
+                          "waiting_for": baseline.missing(),
                           "blink_rate": _num(baseline.mean("blink")),
                           "breathing_rate": _num(baseline.mean("breath")),
                           "heart_rate": _num(baseline.mean("heart"))},
