@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#181a1e">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Cuore">
+  <title>Cuore · Camera vital signs</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icon-180.png">
+  <link rel="stylesheet" href="styles.css">
+  <script type="module" src="js/main.js"></script>
+</head>
+<body>
+  <section id="start" class="start">
+    <div class="start-inner">
+      <img src="icon.svg" alt="" class="logo" width="72" height="72">
+      <h1>Cuore</h1>
+      <p class="lead">Heart rate, breathing and blinks from your phone's camera.</p>
+      <ul class="tips">
+        <li>Face a window or lamp so your face is evenly lit.</li>
+        <li>Rest the phone on something and hold still.</li>
+        <li>Show your shoulders for a better breathing reading.</li>
+      </ul>
+      <button id="start-button" class="primary" disabled>Loading…</button>
+      <p id="start-error" class="error" hidden></p>
+      <p class="fine">Video is processed on this device and never uploaded.
+        Not a medical device: readings are estimates.</p>
+    </div>
+  </section>
+
+  <main id="app" class="app" hidden>
+    <div id="stage" class="stage">
+      <video id="video" playsinline muted autoplay></video>
+      <canvas id="overlay"></canvas>
+      <div class="stage-bar">
+        <span id="status" class="pill"><i></i><span>Starting…</span></span>
+        <button id="switch-camera" class="icon-button" title="Switch camera" aria-label="Switch camera" hidden>
+          <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M9 4 7.2 6H4a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-3.2L15 4H9Zm3 4a5 5 0 0 1 4.6 3H18l-2.5 3-2.5-3h1.4A3 3 0 0 0 9.2 12H7.1A5 5 0 0 1 12 8Zm-4.5 5 2.5 3H8.6a3 3 0 0 0 5.2 1h2.1A5 5 0 0 1 7.4 16H6l1.5-3Z"/></svg>
+        </button>
+      </div>
+    </div>
+
+    <section class="card live">
+      <header><span class="label">Heart rate</span><span class="tag live-tag">LIVE</span></header>
+      <div class="big"><span id="live-bpm" class="value pulse-color">--</span><span class="unit">BPM</span></div>
+      <footer class="muted">colour · POS</footer>
+    </section>
+
+    <section class="card average">
+      <header>
+        <span class="label">Average <span id="avg-length">(2:00)</span></span>
+        <span id="avg-tag" class="tag"><i class="dot"></i><span>REC</span></span>
+      </header>
+      <div class="big"><span id="avg-bpm" class="value">--</span><span class="unit">BPM</span></div>
+      <div class="progress"><div id="avg-progress"></div></div>
+      <footer>
+        <span id="avg-footer" class="muted">waiting for heart rate…</span>
+        <span class="avg-controls">
+          <span class="segmented" role="group" aria-label="Average length">
+            <button data-seconds="90">1:30</button><button data-seconds="120" class="on">2:00</button>
+          </span>
+          <button id="avg-restart" class="icon-button small" title="Restart average" aria-label="Restart average">
+            <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M12 5V2L7 6l5 4V7a5 5 0 1 1-5 5H5a7 7 0 1 0 7-7Z"/></svg>
+          </button>
+        </span>
+      </footer>
+    </section>
+
+    <section class="card graph pulse">
+      <header><span class="label">Pulse</span><span id="pulse-value" class="graph-value pulse-color"></span></header>
+      <canvas id="pulse-graph"></canvas>
+    </section>
+
+    <section class="card graph breath">
+      <header><span class="label">Breathing</span><span id="breath-value" class="graph-value breath-color"></span></header>
+      <canvas id="breath-graph"></canvas>
+    </section>
+
+    <section class="card info">
+      <dl>
+        <dt>Breathing</dt><dd id="breathing">--</dd>
+        <dt>Blinks</dt><dd id="blinks">--</dd>
+      </dl>
+      <p id="fps" class="muted"></p>
+      <p id="tip" class="muted" hidden>Tip: move back so your shoulders show</p>
+    </section>
+  </main>
+</body>
+</html>
