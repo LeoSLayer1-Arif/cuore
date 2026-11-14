@@ -1,3 +1,5 @@
 -r ../requirements.txt
 scikit-image        # only for the synthetic test face (public-domain NASA photo)
 websockets          # only for replay_backend.py --transport websocket
+playwright          # only for browser_e2e.py (uses an installed Chrome/Chromium)
+cryptography        # only for browser_e2e.py's throwaway test certificate

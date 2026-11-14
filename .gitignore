@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+# HTTPS certificate and private key for server.py (made with mkcert, never commit)
+certs/
+# scratch output of validation/browser_e2e.py
+.e2e/

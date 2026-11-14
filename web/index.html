@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#121316">
+  <title>Cuore</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main id="dash">
+    <section id="stage">
+      <video id="video" playsinline muted autoplay></video>
+      <canvas id="overlay"></canvas>
+      <div id="stage-hint">Camera preview</div>
+    </section>
+
+    <div class="panel card" id="live-card">
+      <div class="card-head"><span class="label">HEART RATE</span><span class="tag pulse">LIVE</span></div>
+      <div class="big"><span id="live-value" class="value faint">--</span><span class="unit">BPM</span></div>
+      <div class="foot" id="live-source">--</div>
+    </div>
+
+    <div class="panel card" id="avg-card">
+      <div class="card-head"><span class="label" id="avg-title">AVERAGE</span><span class="tag" id="avg-tag"><i id="avg-dot"></i><span id="avg-tag-text">--</span></span></div>
+      <div class="big"><span id="avg-value" class="value faint">--</span><span class="unit">BPM</span></div>
+      <div class="bar"><div id="avg-bar"></div></div>
+      <div class="foot" id="avg-footer">press Start to measure</div>
+    </div>
+
+    <div class="panel" id="info">
+      <div id="rows"></div>
+      <div id="status"><i id="status-dot"></i><span id="status-text">Ready</span></div>
+      <div id="notes"></div>
+    </div>
+
+    <div class="panel graph" id="pulse-panel"><canvas id="pulse-graph"></canvas></div>
+    <div class="panel graph" id="breath-panel"><canvas id="breath-graph"></canvas></div>
+
+    <div class="panel" id="controls">
+      <button id="start" type="button">Start</button>
+      <button id="stop" type="button" disabled>Stop</button>
+      <button id="reset" type="button" disabled title="Restart the average heart rate recording">Restart average</button>
+    </div>
+  </main>
+
+  <div id="banner" hidden></div>
+  <script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,88 @@
+/* Colours and card style match the desktop dashboard in app.py (converted from BGR). */
+:root {
+  --panel-bg: rgba(24, 26, 30, 0.78);
+  --panel-border: rgb(66, 70, 78);
+  --grid: rgb(60, 64, 70);
+  --text: rgb(235, 235, 235);
+  --text-dim: rgb(155, 160, 165);
+  --text-faint: rgb(110, 115, 120);
+  --pulse: rgb(255, 90, 110);
+  --avg: rgb(45, 212, 191);
+  --breath: rgb(96, 165, 250);
+  --yellow: rgb(255, 220, 0);
+  --page: rgb(18, 19, 22);
+  --num-font: "SF Mono", ui-monospace, "Roboto Mono", Menlo, Consolas, monospace;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; background: var(--page); color: var(--text);
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; -webkit-text-size-adjust: 100%; }
+
+.panel { background: var(--panel-bg); border: 1px solid var(--panel-border); border-radius: 14px; }
+.label { color: var(--text-dim); font-size: 13px; letter-spacing: 0.02em; }
+.tag { font-size: 12px; display: inline-flex; align-items: center; gap: 5px; }
+.tag.pulse { color: var(--pulse); }
+.value { font-family: var(--num-font); font-size: 44px; font-weight: 600; line-height: 1;
+  font-variant-numeric: tabular-nums; color: var(--pulse); }
+.value.faint { color: var(--text-faint); }
+.unit { color: var(--text-dim); font-size: 13px; margin-left: 8px; }
+.foot { color: var(--text-faint); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+.card { padding: 10px 14px; display: flex; flex-direction: column; justify-content: space-between; min-height: 110px; }
+.card-head { display: flex; justify-content: space-between; align-items: center; }
+.big { display: flex; align-items: baseline; margin-top: 6px; }
+.bar { height: 4px; border-radius: 2px; background: var(--grid); margin: 6px 0 4px; overflow: hidden; }
+#avg-bar { height: 100%; width: 0; background: var(--avg); border-radius: 2px; }
+#avg-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--pulse); display: none; }
+#avg-dot.on { display: inline-block; }
+#avg-dot.blink { visibility: hidden; }
+
+#info { padding: 10px 14px; font-size: 14px; }
+#rows .row { display: flex; line-height: 24px; }
+#rows .row span:first-child { color: var(--text-dim); width: 96px; flex: none; font-size: 13px; }
+#status { display: flex; align-items: center; gap: 9px; line-height: 24px; }
+#status-dot { width: 10px; height: 10px; border-radius: 50%; background: rgb(170, 170, 170); flex: none; }
+#notes { color: var(--text-faint); font-size: 12px; line-height: 20px; }
+
+.graph { position: relative; }
+.graph canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+
+#controls { display: flex; gap: 8px; padding: 8px; }
+#controls button { flex: 1; font: inherit; font-size: 15px; padding: 10px 8px; border-radius: 10px;
+  border: 1px solid var(--panel-border); background: rgb(36, 39, 45); color: var(--text); }
+#controls button#start { background: var(--avg); color: rgb(10, 30, 28); border-color: transparent; font-weight: 600; }
+#controls button:disabled { opacity: 0.4; }
+
+#stage { position: relative; background: #000; overflow: hidden; }
+#video { display: block; width: 100%; height: 100%; object-fit: contain; transform: scaleX(-1); }
+#overlay { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+#stage-hint { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  color: var(--text-faint); font-size: 14px; }
+#stage.live #stage-hint { display: none; }
+
+#banner { position: fixed; left: 12px; right: 12px; top: calc(12px + env(safe-area-inset-top)); z-index: 10;
+  background: rgb(60, 20, 24); border: 1px solid rgb(255, 80, 80); color: var(--text);
+  border-radius: 12px; padding: 12px 14px; font-size: 14px; line-height: 1.4; }
+
+/* Portrait phones: the desktop cards, stacked under the camera picture. */
+#dash { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding: 10px;
+  padding-bottom: calc(76px + env(safe-area-inset-bottom)); }
+#stage { grid-column: 1 / -1; aspect-ratio: 4 / 3; border-radius: 14px; max-height: 46vh; }
+#info, #pulse-panel, #breath-panel { grid-column: 1 / -1; }
+#pulse-panel { height: 190px; }
+#breath-panel { height: 130px; }
+#controls { position: fixed; left: 10px; right: 10px; bottom: calc(10px + env(safe-area-inset-bottom)); z-index: 5; }
+@media (max-width: 360px) { .value { font-size: 36px; } }
+
+/* Landscape / larger screens: the desktop layout itself, drawn over the camera picture
+   on a 1024 px wide board that is scaled to fit (same positions as draw_dashboard). */
+body.board-mode { overflow: hidden; }
+body.board-mode #dash { display: block; position: absolute; left: 0; top: 0; width: 1024px;
+  padding: 0; transform-origin: 0 0; }
+body.board-mode #stage { position: absolute; inset: 0; aspect-ratio: auto; max-height: none; border-radius: 0; }
+body.board-mode #live-card { position: absolute; left: 12px; top: 12px; width: 190px; height: 110px; }
+body.board-mode #avg-card { position: absolute; left: 212px; top: 12px; width: 240px; height: 110px; }
+body.board-mode #info { position: absolute; left: 12px; top: 132px; min-width: 440px; }
+body.board-mode #pulse-panel { position: absolute; right: 12px; top: 12px; width: 440px; height: 190px; }
+body.board-mode #breath-panel { position: absolute; left: 12px; right: 12px; bottom: 12px; height: 130px; }
+body.board-mode #controls { position: absolute; left: auto; right: 12px; bottom: 152px; width: 440px; }
