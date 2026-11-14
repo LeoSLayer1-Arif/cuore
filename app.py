@@ -11,7 +11,7 @@ Usage:
     python app.py --camera 1 --width 1280 --height 720   # ask for a specific size
     python app.py --camera 1 --backend msmf      # use Windows Media Foundation instead of DirectShow
     python app.py --screen 100 100 640 480       # read a region of the screen (e.g. a Zoom tile)
-    python app.py --avg-seconds 90               # average heart rate over 90 s instead of 120 s
+    python app.py --avg-seconds 90               # average heart rate over 90 s instead of 60 s
 
 Press q or Esc to quit. Press r to restart the average heart rate recording.
 """
@@ -85,8 +85,8 @@ def parse_args():
                         help="heart rate source: rppg (open-rppg library) or colour (this app's own)")
     parser.add_argument("--rppg-model", default="FacePhys.rlap",
                         help="open-rppg model name, e.g. FacePhys.rlap, ME-flow.rlap, PhysFormer.pure")
-    parser.add_argument("--avg-seconds", type=float, default=120,
-                        help="how many seconds of heart rate readings the average uses (default 120)")
+    parser.add_argument("--avg-seconds", type=float, default=60,
+                        help="how many seconds of heart rate readings the average uses (default 60)")
     args = parser.parse_args()
     if args.avg_seconds < 10:
         parser.error("--avg-seconds must be at least 10")
@@ -600,16 +600,24 @@ class AverageBpmMonitor:
     is no reading (no face, or still measuring) the recording pauses instead
     of counting the gap, so the result always covers `duration` seconds of
     real readings. Once complete, the final average is kept until reset().
+
+    The first `calibration_sec` seconds of readings are a calibration period:
+    they are counted the same way (pausing without a reading) but are not
+    included in the average, because the first readings after the heart rate
+    appears are the least settled.
     """
 
     SAMPLE_EVERY_SEC = 1.0
+    CALIBRATION_SEC = 10.0
 
-    def __init__(self, duration_sec):
+    def __init__(self, duration_sec, calibration_sec=CALIBRATION_SEC):
         self.duration = float(duration_sec)
+        self.calibration = float(calibration_sec)
         self.reset()
 
     def reset(self):
         self.readings = []
+        self.calibration_samples = 0
         self.last_sample = -1e9
         self.paused = False
         self.result = None
@@ -617,6 +625,14 @@ class AverageBpmMonitor:
     @property
     def done(self):
         return self.result is not None
+
+    @property
+    def calibrated_sec(self):
+        return self.calibration_samples * self.SAMPLE_EVERY_SEC
+
+    @property
+    def calibrating(self):
+        return self.calibrated_sec < self.calibration
 
     @property
     def recorded_sec(self):
@@ -638,6 +654,9 @@ class AverageBpmMonitor:
         if bpm is None or now - self.last_sample < self.SAMPLE_EVERY_SEC:
             return
         self.last_sample = now
+        if self.calibrating:
+            self.calibration_samples += 1               # counted, but left out of the average
+            return
         self.readings.append(float(bpm))
         if self.recorded_sec >= self.duration:
             self.result = self.running_average
@@ -797,12 +816,22 @@ def draw_average_card(img, box, avg, now):
         value, value_color = f"{avg.result:.0f}", AVG_COLOR
         footer = f"{len(avg.readings)} readings  |  R: restart"
     else:
-        tag, tag_color = ("PAUSED", TEXT_FAINT) if avg.paused else ("REC", PULSE_COLOR)
+        if avg.paused:
+            tag, tag_color = "PAUSED", TEXT_FAINT
+        elif avg.calibrating:
+            tag, tag_color = "CAL", YELLOW
+        else:
+            tag, tag_color = "REC", PULSE_COLOR
         running = avg.running_average
         value = f"{running:.0f}" if running is not None else "--"
         value_color = TEXT_DIM if running is not None else TEXT_FAINT
-        if not avg.readings:
+        if avg.calibrating and avg.calibration_samples == 0:
             footer = "waiting for heart rate..."
+        elif avg.calibrating:
+            footer = (f"calibrating {format_duration(avg.calibrated_sec)} / "
+                      f"{format_duration(avg.calibration)}")
+        elif not avg.readings:
+            footer = "calibrated, recording..."
         else:
             footer = (f"recording {format_duration(avg.recorded_sec)} / "
                       f"{format_duration(avg.duration)}")
