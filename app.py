@@ -11,8 +11,9 @@ Usage:
     python app.py --camera 1 --width 1280 --height 720   # ask for a specific size
     python app.py --camera 1 --backend msmf      # use Windows Media Foundation instead of DirectShow
     python app.py --screen 100 100 640 480       # read a region of the screen (e.g. a Zoom tile)
+    python app.py --avg-seconds 90               # average heart rate over 90 s instead of 120 s
 
-Press q or Esc to quit.
+Press q or Esc to quit. Press r to restart the average heart rate recording.
 """
 import argparse
 import os
@@ -55,6 +56,21 @@ WHITE, GRAY = (255, 255, 255), (170, 170, 170)
 RED, YELLOW, GREEN, BLUE = (80, 80, 255), (0, 220, 255), (0, 255, 0), (255, 160, 60)
 MAGENTA = (255, 0, 255)
 
+# Dashboard look (BGR). The UI is drawn on a copy of the frame scaled to DISPLAY_WIDTH,
+# so text and graphs stay sharp and the layout is the same for every camera size.
+DISPLAY_WIDTH = 1024
+FONT = cv2.FONT_HERSHEY_SIMPLEX
+FONT_NUM = cv2.FONT_HERSHEY_DUPLEX
+PANEL_BG = (30, 26, 24)
+PANEL_BORDER = (78, 70, 66)
+GRID = (70, 64, 60)
+TEXT = (235, 235, 235)
+TEXT_DIM = (165, 160, 155)
+TEXT_FAINT = (120, 115, 110)
+PULSE_COLOR = (110, 90, 255)      # coral
+AVG_COLOR = (191, 212, 45)        # teal
+BREATH_COLOR = (250, 165, 96)     # sky blue
+
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Camera-based heart rate and breathing rate")
@@ -69,7 +85,12 @@ def parse_args():
                         help="heart rate source: rppg (open-rppg library) or colour (this app's own)")
     parser.add_argument("--rppg-model", default="FacePhys.rlap",
                         help="open-rppg model name, e.g. FacePhys.rlap, ME-flow.rlap, PhysFormer.pure")
-    return parser.parse_args()
+    parser.add_argument("--avg-seconds", type=float, default=120,
+                        help="how many seconds of heart rate readings the average uses (default 120)")
+    args = parser.parse_args()
+    if args.avg_seconds < 10:
+        parser.error("--avg-seconds must be at least 10")
+    return args
 
 
 def create_landmarker():
@@ -572,28 +593,273 @@ def eye_aspect_ratio(points, indices):
     return vertical / (2.0 * horizontal + 1e-6)
 
 
-def draw_waveform(frame, waveform, fs, seconds, box, color, label):
-    x, y, width, height = box
-    cv2.rectangle(frame, (x, y), (x + width, y + height), (40, 40, 40), -1)
-    cv2.putText(frame, label, (x + 5, y + 18), cv2.FONT_HERSHEY_SIMPLEX, 0.5, GRAY, 1)
-    if waveform is None or len(waveform) < 2:
+class AverageBpmMonitor:
+    """Records the live heart rate for a fixed period and reports the average.
+
+    One reading is taken per second while a heart rate is shown. When there
+    is no reading (no face, or still measuring) the recording pauses instead
+    of counting the gap, so the result always covers `duration` seconds of
+    real readings. Once complete, the final average is kept until reset().
+    """
+
+    SAMPLE_EVERY_SEC = 1.0
+
+    def __init__(self, duration_sec):
+        self.duration = float(duration_sec)
+        self.reset()
+
+    def reset(self):
+        self.readings = []
+        self.last_sample = -1e9
+        self.paused = False
+        self.result = None
+
+    @property
+    def done(self):
+        return self.result is not None
+
+    @property
+    def recorded_sec(self):
+        return len(self.readings) * self.SAMPLE_EVERY_SEC
+
+    @property
+    def progress(self):
+        return min(1.0, self.recorded_sec / self.duration)
+
+    @property
+    def running_average(self):
+        return float(np.mean(self.readings)) if self.readings else None
+
+    def update(self, now, bpm):
+        """now: time in seconds. bpm: the live heart rate, or None when there isn't one."""
+        if self.done:
+            return
+        self.paused = bpm is None
+        if bpm is None or now - self.last_sample < self.SAMPLE_EVERY_SEC:
+            return
+        self.last_sample = now
+        self.readings.append(float(bpm))
+        if self.recorded_sec >= self.duration:
+            self.result = self.running_average
+
+
+# ----- dashboard drawing -----
+
+def put_text(img, text, org, scale, color, thickness=1, font=FONT):
+    cv2.putText(img, text, (int(org[0]), int(org[1])), font, scale, color, thickness, cv2.LINE_AA)
+
+
+def text_width(text, scale, thickness=1, font=FONT):
+    return cv2.getTextSize(text, font, scale, thickness)[0][0]
+
+
+def rounded_rect(img, x0, y0, x1, y1, radius, color, thickness=-1):
+    """Rectangle with rounded corners. thickness=-1 fills it."""
+    r = int(max(0, min(radius, (x1 - x0) // 2, (y1 - y0) // 2)))
+    if thickness < 0:
+        cv2.rectangle(img, (x0 + r, y0), (x1 - r, y1), color, -1)
+        cv2.rectangle(img, (x0, y0 + r), (x1, y1 - r), color, -1)
+        for cx, cy in ((x0 + r, y0 + r), (x1 - r, y0 + r), (x0 + r, y1 - r), (x1 - r, y1 - r)):
+            cv2.circle(img, (cx, cy), r, color, -1, cv2.LINE_AA)
         return
-    segment = waveform[-int(seconds * fs):]
-    span = segment.max() - segment.min()
-    normalized = (segment - segment.min()) / (span + 1e-9)
-    xs = x + np.linspace(0, width, len(segment))
-    ys = y + height - normalized * height
-    points = np.stack([xs, ys], axis=1).astype(np.int32)
-    cv2.polylines(frame, [points], False, color, 2)
+    line = dict(color=color, thickness=thickness, lineType=cv2.LINE_AA)
+    cv2.line(img, (x0 + r, y0), (x1 - r, y0), **line)
+    cv2.line(img, (x0 + r, y1), (x1 - r, y1), **line)
+    cv2.line(img, (x0, y0 + r), (x0, y1 - r), **line)
+    cv2.line(img, (x1, y0 + r), (x1, y1 - r), **line)
+    for center, angle in (((x0 + r, y0 + r), 180), ((x1 - r, y0 + r), 270),
+                          ((x1 - r, y1 - r), 0), ((x0 + r, y1 - r), 90)):
+        cv2.ellipse(img, center, (r, r), angle, 0, 90, **line)
 
 
-def draw_hud(frame, lines):
-    panel_height = 20 + 28 * len(lines)
-    overlay = frame.copy()
-    cv2.rectangle(overlay, (0, 0), (400, panel_height), (0, 0, 0), -1)
-    cv2.addWeighted(overlay, 0.6, frame, 0.4, 0, frame)
-    for i, (text, color) in enumerate(lines):
-        cv2.putText(frame, text, (10, 30 + 28 * i), cv2.FONT_HERSHEY_SIMPLEX, 0.65, color, 2)
+def blend(img, box, alpha, draw):
+    """Run draw(overlay, (left, top)) on a copy of a region, then mix it back in with alpha."""
+    x, y, w, h = box
+    x0, y0 = max(0, int(x)), max(0, int(y))
+    x1, y1 = min(img.shape[1], int(x + w)), min(img.shape[0], int(y + h))
+    if x1 <= x0 or y1 <= y0:
+        return
+    roi = img[y0:y1, x0:x1]
+    overlay = roi.copy()
+    draw(overlay, (x0, y0))
+    cv2.addWeighted(overlay, alpha, roi, 1 - alpha, 0, dst=roi)
+
+
+def draw_panel(img, box, radius=14, alpha=0.78):
+    """Semi-transparent dark card with a thin border."""
+    x, y, w, h = box
+    blend(img, box, alpha,
+          lambda ov, o: rounded_rect(ov, x - o[0], y - o[1], x + w - 1 - o[0], y + h - 1 - o[1],
+                                     radius, PANEL_BG))
+    rounded_rect(img, x, y, x + w - 1, y + h - 1, radius, PANEL_BORDER, 1)
+
+
+def dashed_line(img, p0, p1, color, dash=4, gap=5):
+    p0, p1 = np.array(p0, dtype=float), np.array(p1, dtype=float)
+    length = np.linalg.norm(p1 - p0)
+    if length < 1:
+        return
+    direction = (p1 - p0) / length
+    for start in np.arange(0, length, dash + gap):
+        a = p0 + direction * start
+        b = p0 + direction * min(start + dash, length)
+        cv2.line(img, tuple(np.round(a).astype(int)), tuple(np.round(b).astype(int)),
+                 color, 1, cv2.LINE_AA)
+
+
+def format_duration(seconds):
+    seconds = int(round(seconds))
+    return f"{seconds // 60}:{seconds % 60:02d}"
+
+
+def draw_graph(img, waveform, fs, seconds, box, color, title, value_text=None):
+    """Card with a scrolling signal: title, live value, grid, time axis, glow line and area fill."""
+    x, y, w, h = box
+    draw_panel(img, box)
+    put_text(img, title, (x + 16, y + 26), 0.5, TEXT_DIM, 1)
+    if value_text:
+        put_text(img, value_text, (x + w - 16 - text_width(value_text, 0.6, 1, FONT_NUM), y + 27),
+                 0.6, color, 1, FONT_NUM)
+
+    left, top, right, bottom = x + 16, y + 42, x + w - 16, y + h - 30
+    plot_w, plot_h = right - left, bottom - top
+
+    # Grid: dashed horizontal lines, one vertical line per time tick, labelled underneath.
+    for i in range(1, 4):
+        gy = top + plot_h * i / 4
+        dashed_line(img, (left, gy), (right, gy), GRID)
+    step = 1 if seconds <= 10 else 5
+    for s in range(0, int(seconds) + 1, step):
+        gx = right - plot_w * s / seconds
+        if s:
+            dashed_line(img, (gx, top), (gx, bottom), GRID)
+        label = "now" if s == 0 else f"-{s}s"
+        lw = text_width(label, 0.38)
+        lx = min(max(gx - lw / 2, left), right - lw)
+        put_text(img, label, (lx, bottom + 18), 0.38, TEXT_FAINT)
+    cv2.line(img, (left, bottom), (right, bottom), PANEL_BORDER, 1, cv2.LINE_AA)
+
+    if waveform is None or len(waveform) < 2:
+        msg = "waiting for signal..."
+        put_text(img, msg, (left + (plot_w - text_width(msg, 0.45)) / 2, top + plot_h / 2 + 5),
+                 0.45, TEXT_FAINT)
+        return
+
+    segment = np.asarray(waveform[-int(seconds * fs):], dtype=float)
+    n = len(segment)
+    # Newest sample sits on the right edge; a short history only fills part of the width.
+    xs = right - (n - 1 - np.arange(n)) / fs / seconds * plot_w
+    low, high = np.percentile(segment, [2, 98])           # ignore single spikes when scaling
+    normalized = np.clip((segment - low) / (high - low + 1e-9), 0, 1)
+    pad = 0.12 * plot_h
+    ys = bottom - pad - normalized * (plot_h - 2 * pad)
+
+    SHIFT = 3                                             # sub-pixel drawing for a smooth line
+    points = np.round(np.stack([xs, ys], axis=1) * (1 << SHIFT)).astype(np.int32)
+    base = [[points[-1, 0], bottom << SHIFT], [points[0, 0], bottom << SHIFT]]
+    area = np.vstack([points, np.array(base, dtype=np.int32)])
+
+    def glow_and_fill(ov, o):
+        offset = np.array(o, dtype=np.int32) * (1 << SHIFT)
+        cv2.fillPoly(ov, [area - offset], color, cv2.LINE_AA, SHIFT)
+        cv2.polylines(ov, [points - offset], False, color, 7, cv2.LINE_AA, SHIFT)
+
+    blend(img, (left, top, plot_w + 1, plot_h + 1), 0.18, glow_and_fill)
+    cv2.polylines(img, [points], False, color, 2, cv2.LINE_AA, SHIFT)
+    end = (int(xs[-1]), int(ys[-1]))
+    blend(img, (end[0] - 9, end[1] - 9, 19, 19), 0.35,
+          lambda ov, o: cv2.circle(ov, (end[0] - o[0], end[1] - o[1]), 8, color, -1, cv2.LINE_AA))
+    cv2.circle(img, end, 4, color, -1, cv2.LINE_AA)
+    cv2.circle(img, end, 4, TEXT, 1, cv2.LINE_AA)
+
+
+def draw_big_value(img, x, baseline, value, color, unit="BPM"):
+    put_text(img, value, (x, baseline), 1.5, color, 2, FONT_NUM)
+    put_text(img, unit, (x + text_width(value, 1.5, 2, FONT_NUM) + 8, baseline), 0.5, TEXT_DIM)
+
+
+def draw_live_card(img, box, bpm, source_name):
+    x, y, w, h = box
+    draw_panel(img, box)
+    put_text(img, "HEART RATE", (x + 14, y + 24), 0.45, TEXT_DIM)
+    put_text(img, "LIVE", (x + w - 14 - text_width("LIVE", 0.4), y + 24), 0.4, PULSE_COLOR)
+    draw_big_value(img, x + 14, y + 68, f"{bpm:.0f}" if bpm is not None else "--",
+                   PULSE_COLOR if bpm is not None else TEXT_FAINT)
+    put_text(img, source_name, (x + 14, y + h - 12), 0.4, TEXT_FAINT)
+
+
+def draw_average_card(img, box, avg, now):
+    x, y, w, h = box
+    draw_panel(img, box)
+    put_text(img, f"AVERAGE ({format_duration(avg.duration)})", (x + 14, y + 24), 0.45, TEXT_DIM)
+    if avg.done:
+        tag, tag_color = "FINAL", AVG_COLOR
+        value, value_color = f"{avg.result:.0f}", AVG_COLOR
+        footer = f"{len(avg.readings)} readings  |  R: restart"
+    else:
+        tag, tag_color = ("PAUSED", TEXT_FAINT) if avg.paused else ("REC", PULSE_COLOR)
+        running = avg.running_average
+        value = f"{running:.0f}" if running is not None else "--"
+        value_color = TEXT_DIM if running is not None else TEXT_FAINT
+        if not avg.readings:
+            footer = "waiting for heart rate..."
+        else:
+            footer = (f"recording {format_duration(avg.recorded_sec)} / "
+                      f"{format_duration(avg.duration)}")
+    tag_x = x + w - 14 - text_width(tag, 0.4)
+    put_text(img, tag, (tag_x, y + 24), 0.4, tag_color)
+    if tag == "REC" and int(now * 2) % 2 == 0:                  # blinking recording dot
+        cv2.circle(img, (tag_x - 9, y + 20), 4, PULSE_COLOR, -1, cv2.LINE_AA)
+    draw_big_value(img, x + 14, y + 68, value, value_color)
+
+    bar_x0, bar_x1, bar_y = x + 14, x + w - 14, y + 80
+    rounded_rect(img, bar_x0, bar_y, bar_x1, bar_y + 4, 2, GRID)
+    filled = int(bar_x0 + (bar_x1 - bar_x0) * avg.progress)
+    if filled > bar_x0 + 4:
+        rounded_rect(img, bar_x0, bar_y, filled, bar_y + 4, 2, AVG_COLOR)
+    put_text(img, footer, (x + 14, y + h - 10), 0.4, TEXT_FAINT)
+
+
+def draw_info_panel(img, x, y, min_width, rows, status, notes):
+    """rows: (label, value) pairs. status: (text, color). notes: small grey lines."""
+    line_h, value_x = 24, 110
+    widths = [value_x + text_width(v, 0.5) for _, v in rows]
+    widths += [22 + text_width(status[0], 0.5)] + [text_width(n, 0.42) for n in notes]
+    w = max(min_width, max(widths) + 28)
+    h = 14 + line_h * (len(rows) + 1) + 20 * len(notes) + 6
+    draw_panel(img, (x, y, w, h))
+    ty = y + 30
+    for label, value in rows:
+        put_text(img, label, (x + 14, ty), 0.45, TEXT_DIM)
+        put_text(img, value, (x + 14 + value_x, ty), 0.5, TEXT)
+        ty += line_h
+    cv2.circle(img, (x + 20, ty - 5), 5, status[1], -1, cv2.LINE_AA)
+    put_text(img, status[0], (x + 34, ty), 0.5, status[1])
+    ty += line_h - 2
+    for note in notes:
+        put_text(img, note, (x + 14, ty), 0.42, TEXT_FAINT)
+        ty += 20
+
+
+def draw_dashboard(img, now, bpm, hr_source, avg, rows, status, notes,
+                   pulse_wave, pulse_fs, breath_wave):
+    """Top left: live and average heart rate cards with details below.
+    Top right: pulse graph. Bottom: breathing graph."""
+    h, w = img.shape[:2]
+    margin, gap = 12, 10
+    card_h = 110
+    live_box = (margin, margin, 190, card_h)
+    avg_box = (margin + 190 + gap, margin, 240, card_h)
+    draw_live_card(img, live_box, bpm, hr_source)
+    draw_average_card(img, avg_box, avg, now)
+    draw_info_panel(img, margin, margin + card_h + gap, 190 + gap + 240, rows, status, notes)
+
+    graph_w = 440
+    draw_graph(img, pulse_wave, pulse_fs, 5, (w - margin - graph_w, margin, graph_w, 190),
+               PULSE_COLOR, "PULSE",
+               f"{bpm:.0f} BPM" if bpm is not None else None)
+    draw_graph(img, breath_wave, RESP_FS, 30, (margin, h - margin - 130, w - 2 * margin, 130),
+               BREATH_COLOR, "BREATHING")
 
 
 def main():
@@ -609,6 +875,7 @@ def main():
     blinks = BlinkCounter()
     chest = ChestMotion()
     motion = MotionPulseTracker()                # head and neck movement (experimental)
+    average = AverageBpmMonitor(args.avg_seconds)
 
     t0 = None
     last_timestamp_ms = -1
@@ -711,42 +978,44 @@ def main():
             else:
                 status = ("Signal good", GREEN)
 
+            live_bpm = bpm if face_found else None
+            average.update(now, live_bpm)                # pauses while there is no reading
+
             hr_source = rppg_hr.model_name if rppg_hr is not None else "colour"
-            hr_text = (f"{bpm:.0f} BPM ({hr_source})"
-                       if bpm is not None and face_found else "--")
             resp_text = (f"{resp_rate:.1f} /min ({breathing.channel_name})"
                          if resp_rate is not None else "--")
             blink_text = f"{blink_rate:.0f} /min" if blink_rate is not None else "--"
             fps = rate_from_times(processed_times)
             fps_text = f"Camera {source.fps:.0f} fps, processed {fps:.0f} fps"
-            lines = [
-                (f"Heart rate: {hr_text}", WHITE),
-                (f"Breathing:  {resp_text}", WHITE),
-                (f"Blinks:     {blink_text}", WHITE),
-                status,
-                (fps_text + ("  (need 15+)" if fps < 15 else ""), GRAY),
-            ]
+            rows = [("Breathing", resp_text), ("Blinks", blink_text)]
+            notes = [fps_text + ("  (need 15+)" if fps < 15 else "")]
             if face_found and chest.box is None:
-                lines.append(("Tip: sit back so your shoulders show", GRAY))
+                notes.append("Tip: sit back so your shoulders show")
             if face_found:
                 head_n = len(motion.regions["head"].points)
                 neck_n = len(motion.regions["neck"].points)
-                lines.append((f"Motion points: head {head_n}, neck {neck_n}", GRAY))
-            draw_hud(frame, lines)
+                notes.append(f"Motion points: head {head_n}, neck {neck_n}")
 
-            h, w = frame.shape[:2]
             if rppg_hr is not None:
                 pulse_wave, pulse_fs = rppg_hr.waveform, rppg_hr.fs
             else:
                 pulse_wave, pulse_fs = heart.waveform, HR_FS
-            draw_waveform(frame, pulse_wave, pulse_fs, 5, (10, h - 170, w - 20, 70), RED, "pulse")
-            draw_waveform(frame, breathing.waveform, RESP_FS, 30, (10, h - 90, w - 20, 80), BLUE,
-                          "breathing")
-            cv2.imshow(WINDOW, frame)
+
+            # Draw the dashboard on an enlarged copy so the text and graphs are sharp.
+            h, w = frame.shape[:2]
+            display = frame
+            if w != DISPLAY_WIDTH:
+                display = cv2.resize(frame, (DISPLAY_WIDTH, round(h * DISPLAY_WIDTH / w)),
+                                     interpolation=cv2.INTER_LINEAR)
+            draw_dashboard(display, now, live_bpm, hr_source, average, rows, status, notes,
+                           pulse_wave, pulse_fs, breathing.waveform)
+            cv2.imshow(WINDOW, display)
 
             key = cv2.waitKey(1) & 0xFF
             if key in (ord("q"), 27):
                 break
+            if key == ord("r"):
+                average.reset()
     finally:
         source.release()
         if rppg_hr is not None:

@@ -43,7 +43,11 @@ python app.py
 
 On first run the app downloads the face model (a few MB). On macOS, allow camera access for your terminal.
 
-Sit still facing a window or lamp for 30 seconds while it calibrates. Keys: `q` or Esc quits, `r` recalibrates.
+Sit still facing a window or lamp for 30 seconds while it calibrates. Keys: `q` or Esc quits, `r` restarts the average heart rate recording.
+
+The dashboard shows the live heart rate next to an **average heart rate** card. The average records one reading per second for 2 minutes, pausing while no face or reading is available, then shows the final value until you press `r`. Change the length with `--avg-seconds`, e.g. `python app.py --avg-seconds 90`. The pulse graph is in the top-right corner and the breathing graph along the bottom.
+
+To use an external webcam, pass its index: `python app.py --camera 1` (run `python find_cameras.py` to list cameras).
 
 ### Reading someone on a video call
 
