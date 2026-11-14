@@ -113,11 +113,12 @@ def compare_rppg(a, b, r):
         r.check("model output samples", 0.0 if A["n_signal"] == B["n_signal"] else float("inf"))
         r.check("final pulse signal (filtered BVP)", max_diff(A["bvp"], B["bvp"]), tolerance=1e-4)
         r.check("final raw model output", max_diff(A["raw"], B["raw"]), tolerance=1e-4)
-        r.check("heart rate of the last 10 s", max_diff(A["hr_last10"]["hr"], B["hr_last10"]["hr"]),
+        hr = lambda rec, key: (rec[key] or {}).get("hr")
+        r.check("heart rate of the last 10 s", max_diff(hr(A, "hr_last10"), hr(B, "hr_last10")),
                 tolerance=1e-6)
-        r.check("heart rate of the whole recording", max_diff(A["hr_all"]["hr"], B["hr_all"]["hr"]),
+        r.check("heart rate of the whole recording", max_diff(hr(A, "hr_all"), hr(B, "hr_all")),
                 tolerance=1e-6)
-        print(f"  final HR (last 10 s): A {A['hr_last10']['hr']}  B {B['hr_last10']['hr']}")
+        print(f"  final HR (last 10 s): A {hr(A, 'hr_last10')}  B {hr(B, 'hr_last10')}")
     # The live readings depend on how far the model's background thread had got
     # when hr() was called, which varies between any two runs (even of the same
     # code), so they are shown for information only.

@@ -54,6 +54,8 @@ class Recorder:
 
         def close(obj):
             original_close(obj)              # waits until every frame has been through the model
+            if not obj.model.has_signal:
+                return                       # e.g. the server's unused spare pipeline
             bvp, ts = obj.model.bvp()
             raw, _ = obj.model.bvp(raw=True)
             hr = obj.model.hr(start=-obj.WINDOW_SEC, return_hrv=False)

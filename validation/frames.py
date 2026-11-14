@@ -33,10 +33,17 @@ def _face_mask():
     return cv2.GaussianBlur(mask, (31, 31), 0)[..., None]
 
 
+def exact_time(t):
+    """Round to 1/1024 s (about 1 ms, like a camera clock). Such times survive the
+    seconds -> milliseconds -> seconds trip of the frame header without rounding, so
+    the desktop and backend replays see bit-identical timestamps."""
+    return round(float(t) * 1024.0) / 1024.0
+
+
 def synthetic_times(seconds, fps=30.0, seed=7):
     rng = np.random.default_rng(seed)
     t = np.cumsum(rng.uniform(0.85, 1.15, int(seconds * fps * 1.2)) / fps)
-    return t[t < seconds]
+    return [exact_time(x) for x in t[t < seconds]]
 
 
 def synthetic_frames(seconds=100.0, seed=7):
@@ -73,7 +80,7 @@ def video_frames(path, seconds=None):
         last = t
         if seconds is not None and t > seconds:
             break
-        yield t, frame
+        yield exact_time(t), frame
         i += 1
     cap.release()
 
