@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Vitals</title>
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <h1>Vitals</h1>
+    <span id="signal" class="pill" data-status="no_face">No face</span>
+    <span id="conn" class="conn">Connecting…</span>
+  </header>
+
+  <div id="banner" class="banner" role="status" hidden></div>
+
+  <main class="layout">
+    <section class="video-card">
+      <img id="video" src="/video" alt="Live camera with the measured face regions outlined">
+      <p id="hint" class="hint"></p>
+    </section>
+
+    <section class="side">
+      <div class="metrics">
+        <article class="metric" id="m-heart">
+          <h2>Heart rate</h2>
+          <p class="value"><span data-v>--</span><small>BPM</small></p>
+          <p class="sub" data-sub>Waiting for signal</p>
+          <p class="sub" data-avg></p>
+        </article>
+        <article class="metric" id="m-breath">
+          <h2>Breathing</h2>
+          <p class="value"><span data-v>--</span><small>/min</small></p>
+          <p class="sub" data-sub>Needs about 20 s</p>
+        </article>
+        <article class="metric" id="m-blink">
+          <h2>Blinks</h2>
+          <p class="value"><span data-v>--</span><small>/min</small></p>
+          <p class="sub" data-sub>Needs about 10 s</p>
+        </article>
+      </div>
+
+      <article class="composure">
+        <div class="composure-head">
+          <h2>Composure</h2>
+          <span id="c-state" class="pill" data-state="calibrating">Calibrating</span>
+        </div>
+        <div class="progress" id="c-progress"><div id="c-bar"></div></div>
+        <p id="c-note" class="sub">Waiting for a good signal to start the baseline.</p>
+        <table class="reasons">
+          <thead>
+            <tr><th>Signal</th><th>Now</th><th>Baseline</th><th>Flag when</th><th></th></tr>
+          </thead>
+          <tbody>
+            <tr id="r-blink"><td>Blink rate</td><td data-now>--</td><td data-base>--</td><td>below 60%</td><td data-flag>–</td></tr>
+            <tr id="r-breath"><td>Breathing</td><td data-now>--</td><td data-base>--</td><td>above 125%</td><td data-flag>–</td></tr>
+            <tr id="r-heart"><td>Heart rate</td><td data-now>--</td><td data-base>--</td><td>above 115%</td><td data-flag>–</td></tr>
+          </tbody>
+        </table>
+        <p class="sub small">Compared with your own first minute. Low blinking alone, or any two flags, counts as elevated.</p>
+      </article>
+    </section>
+  </main>
+
+  <footer class="footer" id="fps"></footer>
+
+  <div id="notice" class="notice" role="alertdialog" aria-labelledby="notice-title" aria-describedby="notice-reasons" hidden>
+    <h2 id="notice-title">Change from your baseline</h2>
+    <ul id="notice-reasons"></ul>
+    <button id="notice-close" type="button">Dismiss</button>
+  </div>
+</body>
+</html>

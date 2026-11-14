@@ -1,15 +1,17 @@
 """Serve the live vital-sign readings to a browser on this machine.
 
 Runs the same capture-and-process loop as app.py's main() on a background
-thread (webcam only, exposure lock on, no --record / --screen), and serves:
+thread (webcam only, no --screen), and serves:
 
-    GET /              throwaway test page (video + raw readings)
+    GET /              the web UI (web/index.html, web/app.js, web/app.css)
+    GET /static/...    the UI's files
     GET /api/readings  latest readings as JSON
     GET /video         MJPEG stream of the annotated frames (same image as app.py's window)
 
 Usage:
     python server.py                 # default webcam on http://127.0.0.1:5001/
-    python server.py --camera 1 --port 5002
+    python server.py --hr colour     # the app's own colour-based heart rate
+    python server.py --avg-seconds 90 --camera 1 --port 5002
 
 Bound to 127.0.0.1 only. Press Ctrl+C to stop.
 
@@ -26,7 +28,7 @@ from collections import deque
 import cv2
 import mediapipe as mp
 import numpy as np
-from flask import Flask, Response, abort, jsonify, request
+from flask import Flask, Response, abort, jsonify, request, send_from_directory
 
 import app as vs
 from vitals import HR_FS, RESP_FS, BlinkCounter, HeartRateEstimator, RespirationEstimator
@@ -132,7 +134,9 @@ class SharedState:
             "running": False,
             "error": None,
             "heart_rate": None,
+            "hr_source": None,
             "heart_snr_db": None,
+            "signal_quality": None,
             "breathing_rate": None,
             "breathing_channel": None,
             "blink_rate": None,
@@ -141,6 +145,7 @@ class SharedState:
             "processed_fps": None,
             "face_found": False,
             "shoulders_in_view": False,
+            "average_heart_rate": None,
             "composure": evaluate_composure(False, None, None, None, None, None, None),
             "baseline": {"ready": False, "seconds_collected": None,
                          "blink_rate": None, "breathing_rate": None, "heart_rate": None},
@@ -175,10 +180,17 @@ class SharedState:
 # Processing loop: copied from app.main(), webcam only, no window
 # --------------------------------------------------------------------------
 
-def signal_status(face_found, heart):
-    """app.py's status decision, as a short code."""
+def signal_status(face_found, bpm, rppg_hr, heart):
+    """app.py's status decision, as a short code plus the (text, color) app.py draws."""
     if not face_found:
         return "no_face", ("No face detected", vs.RED)
+    if rppg_hr is not None:
+        if bpm is None:
+            return "measuring", ("Measuring... hold still", vs.GRAY)
+        if rppg_hr.sqi is None or rppg_hr.sqi < vs.RppgHeartRate.GOOD_SQI:
+            quality = f" (quality {rppg_hr.sqi:.2f})" if rppg_hr.sqi is not None else ""
+            return "weak", ("Weak signal, hold still" + quality, vs.YELLOW)
+        return "good", (f"Signal good (quality {rppg_hr.sqi:.2f})", vs.GREEN)
     if heart.snr_db is None:
         return "measuring", ("Measuring... hold still", vs.GRAY)
     if not heart.signal_ok:
@@ -193,15 +205,17 @@ def processing_loop(args, shared, stop):
                                   "file next to app.py.")
         return
 
-    source = landmarker = None
+    source = rppg_hr = landmarker = None
     try:
-        source = vs.CameraSource(args.camera, vs.CAMERA_WARMUP_SEC)   # exposure lock on
+        source = vs.CameraSource(args.camera, args.width, args.height, args.backend)
         landmarker = vs.create_landmarker()
-        heart = HeartRateEstimator()
+        heart = HeartRateEstimator()                 # used with --hr colour
+        rppg_hr = vs.RppgHeartRate(args.rppg_model) if args.hr == "rppg" else None
         breathing = RespirationEstimator(channel_names=("chest", "head"))
         blinks = BlinkCounter()
         chest = vs.ChestMotion()
-        smooth_points = None
+        motion = vs.MotionPulseTracker()
+        average = vs.AverageBpmMonitor(args.avg_seconds)
         baseline = Baseline()
 
         t0 = None
@@ -228,6 +242,8 @@ def processing_loop(args, shared, stop):
             rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             result = landmarker.detect_for_video(
                 mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb), timestamp_ms)
+            if rppg_hr is not None:
+                rppg_hr.add_frame(rgb, arrived)      # rgb is never drawn on, so it stays clean
 
             face_found = bool(result.face_landmarks)
             if face_found:
@@ -235,24 +251,19 @@ def processing_loop(args, shared, stop):
                     heart.reset()
                     breathing.reset()
                     chest.reset()
-                    smooth_points = None
+                    motion.reset()
                 last_face_time = now
 
                 h, w = frame.shape[:2]
                 points = vs.to_pixels(result.face_landmarks[0], w, h)
-                # ROI smoothing, as in app.py: regions use smoothed points, blinks use raw ones.
-                if smooth_points is None:
-                    smooth_points = points.copy()
-                else:
-                    smooth_points = (vs.ROI_SMOOTHING * smooth_points
-                                     + (1 - vs.ROI_SMOOTHING) * points)
-                polygons = [vs.region_polygon(smooth_points, vs.FOREHEAD, shrink=0.8),
-                            vs.region_polygon(smooth_points, vs.LEFT_CHEEK),
-                            vs.region_polygon(smooth_points, vs.RIGHT_CHEEK)]
+                polygons = [vs.region_polygon(points, vs.FOREHEAD, shrink=0.8),
+                            vs.region_polygon(points, vs.LEFT_CHEEK),
+                            vs.region_polygon(points, vs.RIGHT_CHEEK)]
                 # Sample colors before drawing anything on the frame.
-                colors = [vs.region_mean_rgb(frame, polygon) for polygon in polygons]
-                if all(c is not None for c in colors):
-                    heart.add(now, np.concatenate(colors))
+                if rppg_hr is None:
+                    colors = [vs.region_mean_rgb(frame, polygon) for polygon in polygons]
+                    if all(c is not None for c in colors):
+                        heart.add(now, np.concatenate(colors))
 
                 gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
                 chest_y = chest.update(gray, points)
@@ -263,59 +274,87 @@ def processing_loop(args, shared, stop):
                        + vs.eye_aspect_ratio(points, vs.RIGHT_EYE)) / 2
                 blinks.update(now, ear)
 
-                cv2.polylines(frame, polygons, True, vs.GREEN, 1)
+                # Motion tracking runs on the full-resolution frame, so scale the landmarks up.
+                full = source.full_frame
+                to_full = np.array([full.shape[1] / w, full.shape[0] / h], dtype=np.float32)
+                motion.update(now, cv2.cvtColor(full, cv2.COLOR_BGR2GRAY), points * to_full)
+
+                if rppg_hr is None:
+                    cv2.polylines(frame, polygons, True, vs.GREEN, 1)
+                elif rppg_hr.box is not None:
+                    (top, bottom), (left, right) = rppg_hr.box
+                    cv2.rectangle(frame, (int(left), int(top)), (int(right), int(bottom)),
+                                  vs.GREEN, 1)
                 if chest.box is not None:
                     x0, y0, x1, y1 = chest.box
                     cv2.rectangle(frame, (x0, y0), (x1, y1), vs.BLUE, 1)
+                for region in motion.regions.values():        # back to display size
+                    outlines = [(outline / to_full).astype(np.int32) for outline in region.outlines]
+                    cv2.polylines(frame, outlines, True, vs.MAGENTA, 1)
+                    for x, y in region.points / to_full:
+                        cv2.circle(frame, (int(x), int(y)), 1, vs.MAGENTA, -1)
 
             ticked = False
             if now - last_update >= vs.UPDATE_EVERY_SEC:
                 last_update = now
                 ticked = True
-                bpm = heart.update()
+                if rppg_hr is None:
+                    bpm = heart.update()
                 resp_rate = breathing.update()
                 blink_rate = blinks.rate_per_min(now)
+            if rppg_hr is not None:
+                bpm = rppg_hr.update(now)            # updates itself once a second
 
-            status_code, status = signal_status(face_found, heart)
+            status_code, status = signal_status(face_found, bpm, rppg_hr, heart)
 
-            # HUD and waveforms, identical to app.py.
-            hr_text = f"{bpm:.0f} BPM" if bpm is not None else "--"
+            live_bpm = bpm if face_found else None
+            average.update(now, live_bpm)            # pauses while there is no reading
+
+            # Dashboard, identical to app.py.
+            hr_source = rppg_hr.model_name if rppg_hr is not None else "colour"
             resp_text = (f"{resp_rate:.1f} /min ({breathing.channel_name})"
                          if resp_rate is not None else "--")
             blink_text = f"{blink_rate:.0f} /min" if blink_rate is not None else "--"
             fps = vs.rate_from_times(processed_times)
             camera_fps = source.fps
             fps_text = f"Camera {camera_fps:.0f} fps, processed {fps:.0f} fps"
-            lines = [
-                (f"Heart rate: {hr_text}", vs.WHITE),
-                (f"Breathing:  {resp_text}", vs.WHITE),
-                (f"Blinks:     {blink_text}", vs.WHITE),
-                status,
-                (fps_text + ("  (need 15+)" if fps < 15 else ""), vs.GRAY),
-            ]
+            rows = [("Breathing", resp_text), ("Blinks", blink_text)]
+            notes = [fps_text + ("  (need 15+)" if fps < 15 else "")]
             if face_found and chest.box is None:
-                lines.append(("Tip: sit back so your shoulders show", vs.GRAY))
-            vs.draw_hud(frame, lines)
+                notes.append("Tip: sit back so your shoulders show")
+            if face_found:
+                head_n = len(motion.regions["head"].points)
+                neck_n = len(motion.regions["neck"].points)
+                notes.append(f"Motion points: head {head_n}, neck {neck_n}")
+
+            if rppg_hr is not None:
+                pulse_wave, pulse_fs = rppg_hr.waveform, rppg_hr.fs
+            else:
+                pulse_wave, pulse_fs = heart.waveform, HR_FS
 
             h, w = frame.shape[:2]
-            vs.draw_waveform(frame, heart.waveform, HR_FS, 5, (10, h - 170, w - 20, 70),
-                             vs.RED, "pulse")
-            vs.draw_waveform(frame, breathing.waveform, RESP_FS, 30, (10, h - 90, w - 20, 80),
-                             vs.BLUE, "breathing")
+            display = frame
+            if w != vs.DISPLAY_WIDTH:
+                display = cv2.resize(frame, (vs.DISPLAY_WIDTH, round(h * vs.DISPLAY_WIDTH / w)),
+                                     interpolation=cv2.INTER_LINEAR)
+            vs.draw_dashboard(display, now, live_bpm, hr_source, average, rows, status, notes,
+                              pulse_wave, pulse_fs, breathing.waveform)
 
-            ok, jpeg = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY])
+            ok, jpeg = cv2.imencode(".jpg", display, [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY])
             if ok:
                 shared.set_jpeg(jpeg.tobytes())
 
             if ticked:
-                baseline.add(now, status_code, blink_rate, resp_rate, bpm)
+                baseline.add(now, status_code, blink_rate, resp_rate, live_bpm)
             composure = evaluate_composure(
                 baseline.ready, baseline.mean("blink"), baseline.mean("breath"),
-                baseline.mean("heart"), blink_rate, resp_rate, bpm)
+                baseline.mean("heart"), blink_rate, resp_rate, live_bpm)
 
             shared.set_readings(
-                heart_rate=_num(bpm),
-                heart_snr_db=_num(heart.snr_db),
+                heart_rate=_num(live_bpm),
+                hr_source=hr_source,
+                heart_snr_db=_num(heart.snr_db) if rppg_hr is None else None,
+                signal_quality=_num(rppg_hr.sqi) if rppg_hr is not None else None,
                 breathing_rate=_num(resp_rate),
                 breathing_channel=breathing.channel_name if resp_rate is not None else None,
                 blink_rate=_num(blink_rate),
@@ -323,7 +362,17 @@ def processing_loop(args, shared, stop):
                 camera_fps=_num(camera_fps),
                 processed_fps=_num(fps),
                 face_found=face_found,
-                shoulders_in_view=chest.box is not None,
+                shoulders_in_view=bool(face_found and chest.box is not None),
+                average_heart_rate={
+                    "duration_sec": _num(average.duration),
+                    "recorded_sec": _num(average.recorded_sec),
+                    "progress": _num(average.progress),
+                    "running_average": _num(average.running_average),
+                    "done": average.done,
+                    "result": _num(average.result),
+                    "paused": average.paused,
+                    "readings": len(average.readings),
+                },
                 composure=composure,
                 baseline={"ready": baseline.ready,
                           "seconds_collected": _num(baseline.seconds_collected(now)),
@@ -332,13 +381,15 @@ def processing_loop(args, shared, stop):
                           "heart_rate": _num(baseline.mean("heart"))},
                 updated_at=time.monotonic(),
             )
-    except BaseException as exc:   # includes SystemExit from CameraSource
+    except BaseException as exc:   # includes SystemExit from CameraSource / RppgHeartRate
         shared.set_readings(error=f"{type(exc).__name__}: {exc}")
         print(f"Processing stopped: {type(exc).__name__}: {exc}")
     finally:
         shared.set_readings(running=False)
         if source is not None:
             source.release()
+        if rppg_hr is not None:
+            rppg_hr.close()
         if landmarker is not None:
             landmarker.close()
 
@@ -347,109 +398,20 @@ def processing_loop(args, shared, stop):
 # Web server
 # --------------------------------------------------------------------------
 
-TEST_PAGE = """<!doctype html>
-<html><head><meta charset="utf-8"><title>Vitals test page</title>
-<style>
-  #notice { display: none; position: fixed; top: 16px; right: 16px; max-width: 320px;
-            background: #fff; border: 2px solid #444; padding: 12px; }
-</style>
-</head>
-<body>
-<p>Throwaway test page. Video: /video &middot; Readings: /api/readings (polled every second)</p>
-<p id="composure">Composure: waiting...</p>
-<img src="/video" alt="annotated camera stream" style="max-width:100%">
-<pre id="readings">waiting...</pre>
+WEB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
 
-<div id="notice" role="alertdialog" aria-labelledby="notice-title">
-  <strong id="notice-title">Change from your baseline</strong>
-  <ul id="notice-reasons"></ul>
-  <button id="notice-close" type="button">Dismiss</button>
-</div>
-
-<script>
-  // Pop-up rule: show once when composure switches to "elevated". It can show again
-  // only after the state has stayed "calm" for REARM_CALM_MS without a break.
-  const REARM_CALM_MS = 30000;
-
-  const out = document.getElementById("readings");
-  const composureLine = document.getElementById("composure");
-  const notice = document.getElementById("notice");
-  const reasonsList = document.getElementById("notice-reasons");
-  document.getElementById("notice-close").addEventListener("click", () => {
-    notice.style.display = "none";
-  });
-
-  let lastState = null;
-  let armed = true;
-  let calmSince = null;
-
-  function fmt(value, digits) {
-    return value === null || value === undefined ? "--" : value.toFixed(digits);
-  }
-
-  function reasons(d) {
-    const c = d.composure, b = d.baseline, items = [];
-    if (c.blink_low) items.push(`Blinking less: ${fmt(d.blink_rate, 0)}/min (baseline ${fmt(b.blink_rate, 0)})`);
-    if (c.breath_high) items.push(`Breathing faster: ${fmt(d.breathing_rate, 1)}/min (baseline ${fmt(b.breathing_rate, 1)})`);
-    if (c.hr_high) items.push(`Heart rate higher: ${fmt(d.heart_rate, 0)} BPM (baseline ${fmt(b.heart_rate, 0)})`);
-    return items;
-  }
-
-  function showNotice(d) {
-    reasonsList.replaceChildren();
-    for (const text of reasons(d)) {
-      const li = document.createElement("li");
-      li.textContent = text;
-      reasonsList.appendChild(li);
-    }
-    notice.style.display = "block";
-  }
-
-  function updateComposure(d) {
-    const state = d.composure.state;
-    const now = Date.now();
-    if (state === "calibrating") {
-      const secs = d.baseline.seconds_collected;
-      composureLine.textContent = "Composure: calibrating" + (secs === null ? " (waiting for a good signal)" : ` (${Math.floor(secs)}/60 s)`);
-    } else if (state === null) {
-      composureLine.textContent = "Composure: no current readings to compare";
-    } else {
-      const why = reasons(d);
-      composureLine.textContent = `Composure: ${state}` + (why.length ? " - " + why.join("; ") : "");
-    }
-
-    if (state === "calm") {
-      if (calmSince === null) calmSince = now;
-      if (now - calmSince >= REARM_CALM_MS) armed = true;
-    } else {
-      calmSince = null;
-    }
-    if (state === "elevated" && lastState !== "elevated" && armed) {
-      showNotice(d);
-      armed = false;
-    }
-    if (state !== null) lastState = state;   // a missing reading doesn't count as a switch
-  }
-
-  async function poll() {
-    try {
-      const r = await fetch("/api/readings", {cache: "no-store"});
-      const d = await r.json();
-      out.textContent = JSON.stringify(d, null, 2);
-      updateComposure(d);
-    } catch (e) {
-      out.textContent = "error: " + e;
-    }
-  }
-  poll();
-  setInterval(poll, 1000);
-</script>
-</body></html>
-"""
+# Only this server's own files may load; no inline scripts, no outside hosts.
+SECURITY_HEADERS = {
+    "Content-Security-Policy": ("default-src 'self'; img-src 'self'; script-src 'self'; "
+                                "style-src 'self'; connect-src 'self'; frame-ancestors 'none'; "
+                                "base-uri 'none'; form-action 'none'"),
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "no-referrer",
+}
 
 
 def create_app(shared, port):
-    web = Flask(__name__)
+    web = Flask(__name__, static_folder=WEB_DIR, static_url_path="/static")
     allowed_hosts = {f"127.0.0.1:{port}", f"localhost:{port}"}
 
     @web.before_request
@@ -459,9 +421,16 @@ def create_app(shared, port):
         if request.host not in allowed_hosts:
             abort(403)
 
+    @web.after_request
+    def security_headers(response):
+        response.headers.update(SECURITY_HEADERS)
+        return response
+
     @web.get("/")
     def index():
-        return Response(TEST_PAGE, mimetype="text/html")
+        response = send_from_directory(WEB_DIR, "index.html")
+        response.headers["Cache-Control"] = "no-store"
+        return response
 
     @web.get("/api/readings")
     def readings():
@@ -491,26 +460,38 @@ def create_app(shared, port):
 
 
 # app.py names this server relies on. Fails clearly if a different app.py sits next to it.
-REQUIRED_FROM_APP = ("CameraSource", "CAMERA_WARMUP_SEC", "ROI_SMOOTHING", "ChestMotion",
-                     "create_landmarker", "draw_hud", "draw_waveform", "to_pixels",
-                     "region_polygon", "region_mean_rgb", "eye_aspect_ratio",
-                     "rate_from_times", "MODEL_PATH", "FACE_LOST_RESET_SEC",
-                     "UPDATE_EVERY_SEC")
+REQUIRED_FROM_APP = ("CameraSource", "RppgHeartRate", "ChestMotion", "MotionPulseTracker",
+                     "AverageBpmMonitor", "draw_dashboard", "DISPLAY_WIDTH",
+                     "create_landmarker", "to_pixels", "region_polygon", "region_mean_rgb",
+                     "eye_aspect_ratio", "rate_from_times", "MODEL_PATH",
+                     "FACE_LOST_RESET_SEC", "UPDATE_EVERY_SEC")
 
 
 def check_app_version():
     missing = [name for name in REQUIRED_FROM_APP if not hasattr(vs, name)]
     if missing:
-        raise SystemExit(f"{vs.__file__} is missing {', '.join(missing)}; "
-                         "server.py was written for the web-ui branch's app.py.")
+        raise SystemExit(f"{vs.__file__} is missing {', '.join(missing)}; server.py expects "
+                         "the app.py with the dashboard and AverageBpmMonitor.")
 
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Serve live vital-sign readings on 127.0.0.1")
     parser.add_argument("--camera", type=int, default=0, help="webcam index")
+    parser.add_argument("--width", type=int, help="ask the camera for this width (optional)")
+    parser.add_argument("--height", type=int, help="ask the camera for this height (optional)")
+    parser.add_argument("--backend", choices=["auto", "dshow", "msmf"], default="auto",
+                        help="Windows camera system: dshow (DirectShow) or msmf (Media Foundation)")
+    parser.add_argument("--hr", choices=["rppg", "colour"], default="rppg",
+                        help="heart rate source: rppg (open-rppg library) or colour (this app's own)")
+    parser.add_argument("--rppg-model", default="FacePhys.rlap",
+                        help="open-rppg model name, e.g. FacePhys.rlap, ME-flow.rlap")
+    parser.add_argument("--avg-seconds", type=float, default=120,
+                        help="how many seconds of heart rate readings the average uses (default 120)")
     # 5000 is taken by macOS AirPlay Receiver, which answers with an empty 403.
     parser.add_argument("--port", type=int, default=5001, help="port on 127.0.0.1")
     args = parser.parse_args()
+    if args.avg_seconds < 10:
+        parser.error("--avg-seconds must be at least 10")
     if not 1024 <= args.port <= 65535:
         parser.error("--port must be between 1024 and 65535")
     return args
