@@ -43,6 +43,9 @@ JPEG_QUALITY = 80
 
 BASELINE_SEC = 60.0
 BLINK_LOW_RATIO = 0.6
+# With a low baseline, 60% is only a blink or two a minute, which is chance. The drop
+# must also be at least this many blinks/min (6/min baseline: needs under 3, not 3.6).
+BLINK_MIN_DROP = 3.0
 BREATH_HIGH_RATIO = 1.25
 HR_HIGH_RATIO = 1.15
 
@@ -87,7 +90,8 @@ def evaluate_composure(baseline_ready, base_blink, base_breath, base_heart,
     """Compare current readings to the baseline. All the rules live here.
 
     Each flag is True/False when the current reading exists, or None when it
-    is missing (we can't say either way). Rule:
+    is missing (we can't say either way). blink_low needs both: below 60% of
+    baseline and at least BLINK_MIN_DROP blinks/min lower. Rule:
       - "elevated" if blink_low is True on its own (blink is the most reliable
         signal, so it counts double), or if at least two of the three are True
       - "calm" otherwise
@@ -100,7 +104,8 @@ def evaluate_composure(baseline_ready, base_blink, base_breath, base_heart,
     def compare(current, check):
         return None if current is None else bool(check(current))
 
-    blink_low = compare(blink, lambda v: v < BLINK_LOW_RATIO * base_blink)
+    blink_low = compare(blink, lambda v: v < BLINK_LOW_RATIO * base_blink
+                        and base_blink - v >= BLINK_MIN_DROP)
     breath_high = compare(breath, lambda v: v > BREATH_HIGH_RATIO * base_breath)
     hr_high = compare(heart, lambda v: v > HR_HIGH_RATIO * base_heart)
 
