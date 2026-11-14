@@ -1,0 +1,7 @@
+mediapipe
+opencv-python
+numpy
+scipy
+mss
+open-rppg
+setuptools<81
