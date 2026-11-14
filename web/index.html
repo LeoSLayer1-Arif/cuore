@@ -3,73 +3,247 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Vitals</title>
+  <title>CUORE</title>
   <link rel="stylesheet" href="/static/app.css">
   <script src="/static/app.js" defer></script>
 </head>
 <body>
-  <header class="topbar">
-    <h1>Vitals</h1>
-    <span id="signal" class="pill" data-status="no_face">No face</span>
-    <span id="conn" class="conn">Connecting…</span>
-  </header>
 
-  <div id="banner" class="banner" role="status" hidden></div>
+  <!-- Shared SVG pieces -->
+  <svg class="sr-defs" aria-hidden="true" focusable="false">
+    <defs>
+      <radialGradient id="g-heart" cx="38%" cy="34%" r="78%">
+        <stop offset="0" stop-color="#ffe6d6"/>
+        <stop offset="0.42" stop-color="#f7ae92"/>
+        <stop offset="0.78" stop-color="#e8735d"/>
+        <stop offset="1" stop-color="#c84a42"/>
+      </radialGradient>
+      <linearGradient id="g-vessel" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0" stop-color="#ffe0d0"/>
+        <stop offset="1" stop-color="#f2a185"/>
+      </linearGradient>
+      <radialGradient id="g-glow" cx="50%" cy="50%" r="50%">
+        <stop offset="0" stop-color="#ffcdb3" stop-opacity="0.95"/>
+        <stop offset="0.55" stop-color="#ffd9c6" stop-opacity="0.45"/>
+        <stop offset="1" stop-color="#ffe9dd" stop-opacity="0"/>
+      </radialGradient>
+      <filter id="f-soft" x="-50%" y="-50%" width="200%" height="200%">
+        <feGaussianBlur stdDeviation="9"/>
+      </filter>
+    </defs>
+  </svg>
 
-  <main class="layout">
-    <section class="video-card">
-      <img id="video" src="/video" alt="Live camera with the measured face regions outlined">
-      <p id="hint" class="hint"></p>
-    </section>
+  <!-- ============ 1. Start ============ -->
+  <section id="screen-start" class="screen" aria-labelledby="start-title">
+    <div class="start-card">
+      <div class="logo-wrap">
+        <img id="logo-start" class="logo" src="/static/logo.png" alt="CUORE">
+        <span class="wordmark" hidden>CUORE</span>
+      </div>
+      <h1 id="start-title" class="display">Your vitals,<br>read by your camera.</h1>
+      <p class="lead">CUORE estimates your heart rate, breathing and blinking from your camera,
+        learns your own baseline over about a minute, then tells you when you drift from it.</p>
+      <ul class="consent">
+        <li><span class="tick" aria-hidden="true"></span>Video is processed on this computer and never leaves it.</li>
+        <li><span class="tick" aria-hidden="true"></span>Your browser will ask for camera permission.</li>
+        <li><span class="tick" aria-hidden="true"></span>CUORE is not a medical device. Don't use it for diagnosis.</li>
+      </ul>
+      <button id="btn-start" class="btn btn-primary" type="button">Start Calibrating</button>
+      <p id="start-error" class="error" role="alert" hidden></p>
+    </div>
+  </section>
 
-    <section class="side">
-      <div class="metrics">
-        <article class="metric" id="m-heart">
-          <h2>Heart rate</h2>
-          <p class="value"><span data-v>--</span><small>BPM</small></p>
-          <p class="sub" data-sub>Waiting for signal</p>
-          <p class="sub" data-avg></p>
+  <!-- ============ 2. Calibrating ============ -->
+  <section id="screen-calibrate" class="screen" aria-labelledby="cal-title" hidden>
+    <header class="topbar">
+      <img class="logo logo-small" src="/static/logo.png" alt="CUORE">
+      <span class="wordmark wordmark-small" hidden>CUORE</span>
+      <button id="btn-cancel" class="btn btn-ghost" type="button">Cancel</button>
+    </header>
+    <div class="cal-layout">
+      <div class="cal-preview card">
+        <video id="cal-video" class="mirror" autoplay muted playsinline></video>
+        <img id="cal-img" alt="Camera" hidden>
+        <div class="face-guide" aria-hidden="true"></div>
+        <p class="caption">Centre your face in the oval. Sit back so your shoulders show.</p>
+      </div>
+      <div class="cal-main">
+        <h1 id="cal-title" class="display small">Learning your baseline</h1>
+        <div class="ring-wrap">
+          <svg class="ring" viewBox="0 0 120 120" aria-hidden="true">
+            <circle class="ring-track" cx="60" cy="60" r="52"/>
+            <circle id="ring-bar" class="ring-bar" cx="60" cy="60" r="52"/>
+          </svg>
+          <div class="ring-label">
+            <span id="ring-secs" class="ring-num">0</span>
+            <span id="ring-sub" class="ring-sub">waiting for a good signal</span>
+          </div>
+        </div>
+        <ul class="checklist" id="checklist">
+          <li data-check="camera"><span class="dot"></span>Camera on</li>
+          <li data-check="face"><span class="dot"></span>Face in view</li>
+          <li data-check="heart"><span class="dot"></span>Heart rate <small>~10 s</small></li>
+          <li data-check="breath"><span class="dot"></span>Breathing <small>~20 s</small></li>
+          <li data-check="blink"><span class="dot"></span>Blinks <small>needs a full minute</small></li>
+          <li data-check="signal"><span class="dot"></span>Signal good</li>
+        </ul>
+        <p id="cal-tip" class="tip" aria-live="polite"></p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 3. Main ============ -->
+  <section id="screen-main" class="screen" aria-labelledby="main-title" hidden>
+    <header class="topbar">
+      <img class="logo logo-small" src="/static/logo.png" alt="CUORE">
+      <span class="wordmark wordmark-small" hidden>CUORE</span>
+      <nav class="pills" aria-label="Status">
+        <span id="pill-signal" class="pill" data-status="no_face">No face</span>
+        <span id="pill-time" class="pill pill-light">Session 0:00</span>
+        <span id="pill-conn" class="pill pill-light">Live</span>
+      </nav>
+      <div class="top-actions">
+        <button id="btn-recal" class="btn btn-ghost" type="button">Recalibrate</button>
+        <div class="bell-wrap">
+          <button id="btn-bell" class="icon-btn" type="button" aria-label="Notifications" aria-expanded="false" aria-controls="notif-panel">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a6 6 0 0 0-6 6v3.6l-1.6 2.7A1 1 0 0 0 5.3 17h13.4a1 1 0 0 0 .9-1.7L18 12.6V9a6 6 0 0 0-6-6Zm0 19a2.5 2.5 0 0 0 2.4-2h-4.8A2.5 2.5 0 0 0 12 22Z"/></svg>
+            <span id="bell-badge" class="badge" hidden>0</span>
+          </button>
+          <div id="notif-panel" class="notif-panel card" role="region" aria-label="Notifications" hidden>
+            <div class="notif-head"><h2>Notifications</h2><button id="btn-clear" class="link" type="button">Clear</button></div>
+            <ol id="notif-list" class="notif-list"></ol>
+            <p id="notif-empty" class="muted">Nothing yet. You'll see changes from your baseline here.</p>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <div id="banner" class="banner" role="status" hidden></div>
+
+    <!-- Small camera, top left -->
+    <div class="thumb card" id="thumb">
+      <video id="thumb-video" class="mirror" autoplay muted playsinline></video>
+      <img id="thumb-img" alt="Camera" hidden>
+      <button id="btn-full" class="thumb-btn" type="button" aria-label="Open camera full screen">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5v2H6v3H4Zm11-5h5v5h-2V6h-3V4ZM6 15v3h3v2H4v-5h2Zm12 0h2v5h-5v-2h3v-3Z"/></svg>
+      </button>
+    </div>
+
+    <main class="main-grid">
+      <!-- Left column -->
+      <div class="col col-left">
+        <h1 id="main-title" class="display">Your<br>vitals</h1>
+        <p class="muted lead-small">Live from your camera, compared with your own first minute.</p>
+
+        <article class="card composure" id="composure-card">
+          <div class="card-head">
+            <h2>Composure</h2>
+            <span id="c-state" class="pill" data-state="calibrating">Calibrating</span>
+          </div>
+          <p id="c-note" class="c-note">Learning your baseline.</p>
+          <table class="reasons">
+            <thead><tr><th>Signal</th><th>Now</th><th>Baseline</th><th></th></tr></thead>
+            <tbody>
+              <tr id="r-blink"><td>Blinks</td><td data-now>--</td><td data-base>--</td><td data-flag>–</td></tr>
+              <tr id="r-breath"><td>Breathing</td><td data-now>--</td><td data-base>--</td><td data-flag>–</td></tr>
+              <tr id="r-heart"><td>Heart rate</td><td data-now>--</td><td data-base>--</td><td data-flag>–</td></tr>
+            </tbody>
+          </table>
+          <p class="fine">Elevated = blinking well below your baseline, or any two of: breathing 25% faster, heart rate 15% higher, low blinking.</p>
         </article>
-        <article class="metric" id="m-breath">
-          <h2>Breathing</h2>
-          <p class="value"><span data-v>--</span><small>/min</small></p>
-          <p class="sub" data-sub>Needs about 20 s</p>
-        </article>
-        <article class="metric" id="m-blink">
-          <h2>Blinks</h2>
-          <p class="value"><span data-v>--</span><small>/min</small></p>
-          <p class="sub" data-sub>Needs about 10 s</p>
-        </article>
+
+        <div class="mini-row">
+          <article class="card mini" id="m-breath">
+            <div class="card-head"><h2>Breathing</h2><span class="unit">/min</span></div>
+            <p class="big"><span data-v>--</span></p>
+            <svg class="spark" viewBox="0 0 200 48" preserveAspectRatio="none" aria-hidden="true"><polyline data-spark points=""/></svg>
+            <p class="muted small" data-sub>Needs about 20 s</p>
+          </article>
+          <article class="card mini" id="m-blink">
+            <div class="card-head"><h2>Blinks</h2><span class="unit">/min</span></div>
+            <p class="big"><span data-v>--</span></p>
+            <p class="muted small" data-sub>Counted over the last 60 s</p>
+          </article>
+        </div>
       </div>
 
-      <article class="composure">
-        <div class="composure-head">
-          <h2>Composure</h2>
-          <span id="c-state" class="pill" data-state="calibrating">Calibrating</span>
+      <!-- Centre: heart -->
+      <div class="col col-centre">
+        <div class="heart-stage">
+          <svg id="heart" class="heart idle" viewBox="0 0 320 390" role="img" aria-labelledby="heart-label">
+            <title id="heart-label">Heart, pulsing at your measured heart rate</title>
+            <ellipse cx="160" cy="220" rx="158" ry="160" fill="url(#g-glow)"/>
+            <g class="beat">
+              <!-- great vessels, behind the heart -->
+              <path d="M96 166 L94 86 Q94 74 106 74 L118 74 Q130 74 130 86 L132 166 Z" fill="url(#g-vessel)"/>
+              <path d="M174 160 C170 114 178 84 204 75 C228 67 249 83 249 112 L249 144" fill="none" stroke="#f4b49c" stroke-width="28" stroke-linecap="round"/>
+              <path d="M192 82 L187 48 M211 73 L213 38 M231 77 L240 47" fill="none" stroke="#f8c9b4" stroke-width="12" stroke-linecap="round"/>
+              <path d="M262 152 L294 140 M262 170 L294 170" fill="none" stroke="#f1a88f" stroke-width="11" stroke-linecap="round"/>
+              <ellipse cx="252" cy="162" rx="30" ry="18" fill="#f0a085" transform="rotate(-14 252 162)"/>
+              <ellipse cx="74" cy="182" rx="36" ry="31" fill="#f5aa8e"/>
+              <!-- ventricles -->
+              <path d="M100 152 C70 150 44 182 46 224 C48 272 90 318 140 350 C160 362 174 372 182 382 C190 360 214 336 238 308 C272 268 288 222 270 186 C256 160 228 148 204 158 C182 138 128 134 100 152 Z" fill="url(#g-heart)"/>
+              <!-- pulmonary trunk, in front -->
+              <path d="M158 200 C152 164 142 140 120 126" fill="none" stroke="#ef9f87" stroke-width="24" stroke-linecap="round"/>
+              <path d="M124 129 L92 116" fill="none" stroke="#f3b098" stroke-width="13" stroke-linecap="round"/>
+              <!-- coronary vessels -->
+              <g class="coronary" fill="none" stroke="#fff4ec" stroke-linecap="round">
+                <path d="M162 176 C152 224 168 292 180 372" stroke-width="3.2"/>
+                <path d="M160 218 C134 230 114 254 104 286" stroke-width="2.2"/>
+                <path d="M168 264 C192 274 212 294 224 316" stroke-width="2.2"/>
+                <path d="M124 176 C102 194 84 222 76 254" stroke-width="2.4"/>
+                <path d="M206 170 C232 186 256 216 262 246" stroke-width="2.4"/>
+                <path d="M98 230 C112 238 120 252 122 266 M226 220 C218 234 216 248 218 262" stroke-width="1.5"/>
+              </g>
+              <ellipse cx="108" cy="238" rx="30" ry="62" fill="#ffffff" opacity="0.32" filter="url(#f-soft)" transform="rotate(-18 108 238)"/>
+            </g>
+          </svg>
+          <div class="callout c1"><span class="cdot"></span><span id="co-bpm">-- BPM</span></div>
+          <div class="callout c2"><span class="cdot"></span><span id="co-quality">Signal --</span></div>
+          <div class="callout c3"><span class="cdot"></span><span id="co-avg">Average --</span></div>
         </div>
-        <div class="progress" id="c-progress"><div id="c-bar"></div></div>
-        <p id="c-note" class="sub">Waiting for a good signal to start the baseline.</p>
-        <table class="reasons">
-          <thead>
-            <tr><th>Signal</th><th>Now</th><th>Baseline</th><th>Flag when</th><th></th></tr>
-          </thead>
-          <tbody>
-            <tr id="r-blink"><td>Blink rate</td><td data-now>--</td><td data-base>--</td><td>below 60% and 3+ lower</td><td data-flag>–</td></tr>
-            <tr id="r-breath"><td>Breathing</td><td data-now>--</td><td data-base>--</td><td>above 125%</td><td data-flag>–</td></tr>
-            <tr id="r-heart"><td>Heart rate</td><td data-now>--</td><td data-base>--</td><td>above 115%</td><td data-flag>–</td></tr>
-          </tbody>
-        </table>
-        <p class="sub small">Compared with your own first minute. Low blinking alone, or any two flags, counts as elevated.</p>
-      </article>
-    </section>
-  </main>
+        <p id="heart-caption" class="muted centre small">Waiting for a heart rate. The heart stays still until there's a real reading.</p>
+      </div>
 
-  <footer class="footer" id="fps"></footer>
+      <!-- Right column -->
+      <div class="col col-right">
+        <article class="card gauge-card" id="m-heart">
+          <div class="card-head"><h2>Heart rate</h2><span class="unit" id="hr-source"></span></div>
+          <svg class="gauge" viewBox="0 0 220 130" aria-hidden="true">
+            <g id="gauge-ticks"></g>
+          </svg>
+          <p class="gauge-num"><span data-v>--</span><small>BPM</small></p>
+          <p class="muted small centre" data-sub>Waiting for signal</p>
+        </article>
 
-  <div id="notice" class="notice" role="alertdialog" aria-labelledby="notice-title" aria-describedby="notice-reasons" hidden>
+        <article class="card">
+          <div class="card-head"><h2>Pulse wave</h2><span class="unit">last 6 s</span></div>
+          <svg class="spark spark-tall" viewBox="0 0 200 70" preserveAspectRatio="none" aria-hidden="true"><polyline id="pulse-spark" points=""/></svg>
+        </article>
+
+        <article class="card" id="m-avg">
+          <div class="card-head"><h2>Average heart rate</h2><span class="unit" id="avg-span"></span></div>
+          <p class="big"><span id="avg-v">--</span><small>BPM</small></p>
+          <div class="bar"><div id="avg-bar"></div></div>
+          <p class="muted small" id="avg-sub">Waiting for heart rate</p>
+        </article>
+      </div>
+    </main>
+
+    <footer class="footer" id="fps"></footer>
+  </section>
+
+  <!-- Full screen camera with the analysis overlay -->
+  <div id="full" class="full" hidden>
+    <img id="full-img" alt="Camera with the measured regions and the app's live dashboard">
+    <button id="btn-full-close" class="btn btn-primary full-close" type="button">Close</button>
+  </div>
+
+  <!-- Pop-up -->
+  <div id="notice" class="notice card" role="alertdialog" aria-labelledby="notice-title" aria-describedby="notice-reasons" hidden>
     <h2 id="notice-title">Change from your baseline</h2>
     <ul id="notice-reasons"></ul>
-    <button id="notice-close" type="button">Dismiss</button>
+    <button id="notice-close" class="btn btn-primary" type="button">Dismiss</button>
   </div>
 </body>
 </html>

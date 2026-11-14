@@ -1,17 +1,22 @@
 """Serve the live vital-sign readings to a browser on this machine.
 
 Runs the same capture-and-process loop as app.py's main() on a background
-thread (webcam only, no --screen), and serves:
+thread and serves the CUORE web UI. By default the camera is opened by the
+BROWSER (its own permission prompt); the page sends frames here, stamped with
+the time they were captured, and they go through the same processing.
 
-    GET /              the web UI (web/index.html, web/app.js, web/app.css)
-    GET /static/...    the UI's files
-    GET /api/readings  latest readings as JSON
-    GET /video         MJPEG stream of the annotated frames (same image as app.py's window)
+    GET  /                   the web UI (web/index.html, web/app.js, web/app.css)
+    GET  /static/...         the UI's files
+    GET  /api/readings       latest readings as JSON
+    GET  /video              MJPEG stream of the annotated frames (app.py's dashboard)
+    POST /api/session/start  start a fresh session: new baseline, estimators reset
+    POST /api/frame          one camera frame from the page (browser mode only)
 
 Usage:
-    python server.py                 # default webcam on http://127.0.0.1:5001/
-    python server.py --hr colour     # the app's own colour-based heart rate
-    python server.py --avg-seconds 90 --camera 1 --port 5002
+    python server.py                      # browser camera, http://127.0.0.1:5001/
+    python server.py --source webcam      # Python opens the camera itself, as before
+    python server.py --hr colour          # the app's own colour-based heart rate
+    python server.py --avg-seconds 90 --port 5002
 
 Bound to 127.0.0.1 only. Press Ctrl+C to stop.
 
@@ -35,6 +40,9 @@ from vitals import HR_FS, RESP_FS, BlinkCounter, HeartRateEstimator, Respiration
 
 HOST = "127.0.0.1"
 JPEG_QUALITY = 80
+MAX_FRAME_BYTES = 4 * 1024 * 1024    # one uploaded camera frame
+MAX_FRAME_SIDE = 4096                # pixels
+WAVE_POINTS = 120                    # waveform samples sent to the page per signal
 
 
 # --------------------------------------------------------------------------
@@ -143,31 +151,59 @@ def _num(value):
     return value if math.isfinite(value) else None
 
 
+def wave_for_json(wave, fs, seconds):
+    """The last `seconds` of a waveform, thinned to at most WAVE_POINTS samples.
+
+    Values are the estimator's own samples (every k-th one), not smoothed or
+    rescaled. Returns {"fs": samples per second after thinning, "values": [...]}
+    or None when there is no waveform yet.
+    """
+    if wave is None or fs is None or fs <= 0:
+        return None
+    segment = np.asarray(wave, dtype=float)[-int(seconds * fs):]
+    if len(segment) < 2:
+        return None
+    step = max(1, int(math.ceil(len(segment) / WAVE_POINTS)))
+    thinned = segment[::step]
+    return {"fs": float(fs) / step,
+            "values": [round(float(v), 4) if math.isfinite(v) else None for v in thinned]}
+
+
+def default_readings(source, session_id):
+    return {
+        "running": False,
+        "error": None,
+        "session": {"id": session_id, "source": source},
+        "heart_rate": None,
+        "hr_source": None,
+        "heart_snr_db": None,
+        "signal_quality": None,
+        "breathing_rate": None,
+        "breathing_channel": None,
+        "blink_rate": None,
+        "signal_status": "no_face",
+        "camera_fps": None,
+        "processed_fps": None,
+        "face_found": False,
+        "shoulders_in_view": False,
+        "average_heart_rate": None,
+        "pulse_wave": None,
+        "breath_wave": None,
+        "composure": evaluate_composure(False, None, None, None, None, None, None),
+        "baseline": {"ready": False, "seconds_collected": None, "waiting_for": None,
+                     "blink_rate": None, "breathing_rate": None, "heart_rate": None},
+        "updated_at": None,
+    }
+
+
 class SharedState:
-    def __init__(self):
+    def __init__(self, source):
         self.lock = threading.Lock()
         self.frame_ready = threading.Condition(self.lock)
-        self.readings = {
-            "running": False,
-            "error": None,
-            "heart_rate": None,
-            "hr_source": None,
-            "heart_snr_db": None,
-            "signal_quality": None,
-            "breathing_rate": None,
-            "breathing_channel": None,
-            "blink_rate": None,
-            "signal_status": "no_face",
-            "camera_fps": None,
-            "processed_fps": None,
-            "face_found": False,
-            "shoulders_in_view": False,
-            "average_heart_rate": None,
-            "composure": evaluate_composure(False, None, None, None, None, None, None),
-            "baseline": {"ready": False, "seconds_collected": None, "waiting_for": None,
-                         "blink_rate": None, "breathing_rate": None, "heart_rate": None},
-            "updated_at": None,
-        }
+        self.source = source
+        # Webcam mode starts measuring straight away; browser mode waits for the page.
+        self.session_id = 1 if source == "webcam" else 0
+        self.readings = default_readings(source, self.session_id)
         self.jpeg = None
         self.jpeg_id = 0
 
@@ -180,6 +216,19 @@ class SharedState:
             data = dict(self.readings)
         data["server_time"] = time.monotonic()   # compare with updated_at to see staleness
         return data
+
+    def start_session(self):
+        """New session: old readings are cleared at once so the page never sees a stale baseline."""
+        with self.lock:
+            self.session_id += 1
+            running, error = self.readings["running"], self.readings["error"]
+            self.readings = default_readings(self.source, self.session_id)
+            self.readings.update(running=running, error=error)
+            return self.session_id
+
+    def current_session(self):
+        with self.lock:
+            return self.session_id
 
     def set_jpeg(self, jpeg):
         with self.frame_ready:
@@ -194,7 +243,77 @@ class SharedState:
 
 
 # --------------------------------------------------------------------------
-# Processing loop: copied from app.main(), webcam only, no window
+# Frames from the browser
+# --------------------------------------------------------------------------
+
+class BrowserSource:
+    """Frames uploaded by the page, behaving like app.CameraSource.
+
+    Each frame carries the time the browser captured it (performance clock,
+    seconds). Like CameraSource, the capture time is what the pulse maths uses,
+    not the time the frame happened to arrive. Capture times are mapped onto this
+    process's monotonic clock once per session, keeping the browser's spacing
+    between frames. Frames that are not newer than the last one are dropped.
+    read() mirrors and resizes exactly as CameraSource.read() does.
+    """
+
+    MAX_WIDTH = vs.CameraSource.MAX_WIDTH
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.new_frame = threading.Condition(self.lock)
+        self.frame = None
+        self.timestamp = None
+        self.frame_id = 0
+        self.last_read_id = 0
+        self.full_frame = None
+        self.arrival_times = deque(maxlen=60)
+        self.session_id = None
+        self.offset = 0.0
+        self.last_timestamp = -math.inf
+
+    def push(self, frame, capture_time, session_id):
+        with self.new_frame:
+            if session_id != self.session_id:
+                self.session_id = session_id
+                self.offset = time.monotonic() - capture_time
+            t = capture_time + self.offset
+            if t <= self.last_timestamp:
+                return False
+            self.last_timestamp = t
+            self.frame = frame
+            self.timestamp = t
+            self.frame_id += 1
+            self.arrival_times.append(t)
+            self.new_frame.notify_all()
+            return True
+
+    def read(self, timeout=1.0):
+        """Newest frame not seen yet and its capture time, or (None, None) after `timeout`."""
+        with self.new_frame:
+            if not self.new_frame.wait_for(lambda: self.frame_id != self.last_read_id,
+                                           timeout=timeout):
+                return None, None
+            self.last_read_id = self.frame_id
+            frame, timestamp = self.frame, self.timestamp
+        frame = cv2.flip(frame, 1)             # mirror view, as CameraSource does
+        self.full_frame = frame
+        if frame.shape[1] > self.MAX_WIDTH:
+            scale = 640.0 / frame.shape[1]
+            frame = cv2.resize(frame, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+        return frame, timestamp
+
+    @property
+    def fps(self):
+        with self.lock:
+            return vs.rate_from_times(self.arrival_times)
+
+    def release(self):
+        pass
+
+
+# --------------------------------------------------------------------------
+# Processing loop: copied from app.main(), no window
 # --------------------------------------------------------------------------
 
 def signal_status(face_found, bpm, rppg_hr, heart):
@@ -215,45 +334,71 @@ def signal_status(face_found, bpm, rppg_hr, heart):
     return "good", ("Signal good", vs.GREEN)
 
 
-def processing_loop(args, shared, stop):
+class Session:
+    """Everything app.main() creates per run, rebuilt when the page starts calibrating."""
+
+    def __init__(self, args, session_id):
+        self.id = session_id
+        self.heart = HeartRateEstimator()                 # used with --hr colour
+        self.breathing = RespirationEstimator(channel_names=("chest", "head"))
+        self.blinks = BlinkCounter()
+        self.chest = vs.ChestMotion()
+        self.motion = vs.MotionPulseTracker()
+        self.average = vs.AverageBpmMonitor(args.avg_seconds)
+        self.baseline = Baseline()
+        self.last_update = None
+        self.last_face_time = -1e9
+        self.processed_times = deque(maxlen=60)
+        self.bpm = self.resp_rate = self.blink_rate = None
+
+
+def processing_loop(args, shared, stop, source):
     if not os.path.exists(vs.MODEL_PATH):
         # create_landmarker() would download it; this server must not download at runtime.
         shared.set_readings(error=f"Missing {os.path.basename(vs.MODEL_PATH)}; place the model "
                                   "file next to app.py.")
         return
 
-    source = rppg_hr = landmarker = None
+    rppg_hr = landmarker = None
     try:
-        source = vs.CameraSource(args.camera, args.width, args.height, args.backend)
+        if source is None:
+            source = vs.CameraSource(args.camera, args.width, args.height, args.backend)
         landmarker = vs.create_landmarker()
-        heart = HeartRateEstimator()                 # used with --hr colour
         rppg_hr = vs.RppgHeartRate(args.rppg_model) if args.hr == "rppg" else None
-        breathing = RespirationEstimator(channel_names=("chest", "head"))
-        blinks = BlinkCounter()
-        chest = vs.ChestMotion()
-        motion = vs.MotionPulseTracker()
-        average = vs.AverageBpmMonitor(args.avg_seconds)
-        baseline = Baseline()
+        rppg_session = None          # session whose frames the open-rppg model has seen
+        s = None
 
+        # One clock for the whole run: MediaPipe needs strictly increasing timestamps.
         t0 = None
         last_timestamp_ms = -1
-        last_update = 0.0
-        last_face_time = -1e9
-        processed_times = deque(maxlen=60)
-        bpm = resp_rate = blink_rate = None
         shared.set_readings(running=True)
 
         while not stop.is_set():
             frame, arrived = source.read()
             if frame is None:
-                shared.set_readings(error="No frames from the camera. Is another app using it?")
-                break
+                if args.source == "webcam":
+                    shared.set_readings(error="No frames from the camera. Is another app using it?")
+                    break
+                continue                              # browser paused or not started yet
+
+            session_id = shared.current_session()
+            if session_id == 0:
+                continue                              # page hasn't pressed Start Calibrating
+            if s is None or s.id != session_id:
+                s = Session(args, session_id)
+                if rppg_hr is not None and rppg_session not in (None, session_id):
+                    # The library has no reset; a fresh model drops the old session's pulse.
+                    rppg_hr.close()
+                    rppg_hr = vs.RppgHeartRate(args.rppg_model)
+                rppg_session = session_id
+
             if t0 is None:
                 t0 = arrived
             now = arrived - t0
-            processed_times.append(now)
+            if s.last_update is None:
+                s.last_update = now
+            s.processed_times.append(now)
 
-            # MediaPipe needs strictly increasing timestamps in milliseconds.
             timestamp_ms = max(int(now * 1000), last_timestamp_ms + 1)
             last_timestamp_ms = timestamp_ms
             rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -264,12 +409,12 @@ def processing_loop(args, shared, stop):
 
             face_found = bool(result.face_landmarks)
             if face_found:
-                if now - last_face_time > vs.FACE_LOST_RESET_SEC:
-                    heart.reset()
-                    breathing.reset()
-                    chest.reset()
-                    motion.reset()
-                last_face_time = now
+                if now - s.last_face_time > vs.FACE_LOST_RESET_SEC:
+                    s.heart.reset()
+                    s.breathing.reset()
+                    s.chest.reset()
+                    s.motion.reset()
+                s.last_face_time = now
 
                 h, w = frame.shape[:2]
                 points = vs.to_pixels(result.face_landmarks[0], w, h)
@@ -280,21 +425,21 @@ def processing_loop(args, shared, stop):
                 if rppg_hr is None:
                     colors = [vs.region_mean_rgb(frame, polygon) for polygon in polygons]
                     if all(c is not None for c in colors):
-                        heart.add(now, np.concatenate(colors))
+                        s.heart.add(now, np.concatenate(colors))
 
                 gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-                chest_y = chest.update(gray, points)
+                chest_y = s.chest.update(gray, points)
                 head_y = float(points[:, 1].mean())
-                breathing.add(now, [chest_y, head_y])
+                s.breathing.add(now, [chest_y, head_y])
 
                 ear = (vs.eye_aspect_ratio(points, vs.LEFT_EYE)
                        + vs.eye_aspect_ratio(points, vs.RIGHT_EYE)) / 2
-                blinks.update(now, ear)
+                s.blinks.update(now, ear)
 
                 # Motion tracking runs on the full-resolution frame, so scale the landmarks up.
                 full = source.full_frame
                 to_full = np.array([full.shape[1] / w, full.shape[0] / h], dtype=np.float32)
-                motion.update(now, cv2.cvtColor(full, cv2.COLOR_BGR2GRAY), points * to_full)
+                s.motion.update(now, cv2.cvtColor(full, cv2.COLOR_BGR2GRAY), points * to_full)
 
                 if rppg_hr is None:
                     cv2.polylines(frame, polygons, True, vs.GREEN, 1)
@@ -302,60 +447,61 @@ def processing_loop(args, shared, stop):
                     (top, bottom), (left, right) = rppg_hr.box
                     cv2.rectangle(frame, (int(left), int(top)), (int(right), int(bottom)),
                                   vs.GREEN, 1)
-                if chest.box is not None:
-                    x0, y0, x1, y1 = chest.box
+                if s.chest.box is not None:
+                    x0, y0, x1, y1 = s.chest.box
                     cv2.rectangle(frame, (x0, y0), (x1, y1), vs.BLUE, 1)
-                for region in motion.regions.values():        # back to display size
+                for region in s.motion.regions.values():      # back to display size
                     outlines = [(outline / to_full).astype(np.int32) for outline in region.outlines]
                     cv2.polylines(frame, outlines, True, vs.MAGENTA, 1)
                     for x, y in region.points / to_full:
                         cv2.circle(frame, (int(x), int(y)), 1, vs.MAGENTA, -1)
 
             ticked = False
-            if now - last_update >= vs.UPDATE_EVERY_SEC:
-                last_update = now
+            if now - s.last_update >= vs.UPDATE_EVERY_SEC:
+                s.last_update = now
                 ticked = True
                 if rppg_hr is None:
-                    bpm = heart.update()
-                resp_rate = breathing.update()
-                blink_rate = blinks.rate_per_min(now)
+                    s.bpm = s.heart.update()
+                s.resp_rate = s.breathing.update()
+                s.blink_rate = s.blinks.rate_per_min(now)
             if rppg_hr is not None:
-                bpm = rppg_hr.update(now)            # updates itself once a second
+                s.bpm = rppg_hr.update(now)          # updates itself once a second
+            bpm, resp_rate, blink_rate = s.bpm, s.resp_rate, s.blink_rate
 
-            status_code, status = signal_status(face_found, bpm, rppg_hr, heart)
+            status_code, status = signal_status(face_found, bpm, rppg_hr, s.heart)
 
             live_bpm = bpm if face_found else None
-            average.update(now, live_bpm)            # pauses while there is no reading
+            s.average.update(now, live_bpm)          # pauses while there is no reading
 
             # Dashboard, identical to app.py.
             hr_source = rppg_hr.model_name if rppg_hr is not None else "colour"
-            resp_text = (f"{resp_rate:.1f} /min ({breathing.channel_name})"
+            resp_text = (f"{resp_rate:.1f} /min ({s.breathing.channel_name})"
                          if resp_rate is not None else "--")
             blink_text = f"{blink_rate:.0f} /min" if blink_rate is not None else "--"
-            fps = vs.rate_from_times(processed_times)
+            fps = vs.rate_from_times(s.processed_times)
             camera_fps = source.fps
             fps_text = f"Camera {camera_fps:.0f} fps, processed {fps:.0f} fps"
             rows = [("Breathing", resp_text), ("Blinks", blink_text)]
             notes = [fps_text + ("  (need 15+)" if fps < 15 else "")]
-            if face_found and chest.box is None:
+            if face_found and s.chest.box is None:
                 notes.append("Tip: sit back so your shoulders show")
             if face_found:
-                head_n = len(motion.regions["head"].points)
-                neck_n = len(motion.regions["neck"].points)
+                head_n = len(s.motion.regions["head"].points)
+                neck_n = len(s.motion.regions["neck"].points)
                 notes.append(f"Motion points: head {head_n}, neck {neck_n}")
 
             if rppg_hr is not None:
                 pulse_wave, pulse_fs = rppg_hr.waveform, rppg_hr.fs
             else:
-                pulse_wave, pulse_fs = heart.waveform, HR_FS
+                pulse_wave, pulse_fs = s.heart.waveform, HR_FS
 
             h, w = frame.shape[:2]
             display = frame
             if w != vs.DISPLAY_WIDTH:
                 display = cv2.resize(frame, (vs.DISPLAY_WIDTH, round(h * vs.DISPLAY_WIDTH / w)),
                                      interpolation=cv2.INTER_LINEAR)
-            vs.draw_dashboard(display, now, live_bpm, hr_source, average, rows, status, notes,
-                              pulse_wave, pulse_fs, breathing.waveform)
+            vs.draw_dashboard(display, now, live_bpm, hr_source, s.average, rows, status, notes,
+                              pulse_wave, pulse_fs, s.breathing.waveform)
 
             ok, jpeg = cv2.imencode(".jpg", display, [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY])
             if ok:
@@ -364,45 +510,50 @@ def processing_loop(args, shared, stop):
             # The blink rate is a count over the last 60 s. Until 60 s have passed it is
             # extrapolated from a few seconds and swings wildly (one blink in 10 s reads as
             # 6/min), so only full-window blink rates go into the baseline.
-            blink_window_full = (blinks.start is not None
-                                 and now - blinks.start >= blinks.window_sec)
+            blink_window_full = (s.blinks.start is not None
+                                 and now - s.blinks.start >= s.blinks.window_sec)
             if ticked:
-                baseline.add(now, status_code, blink_rate if blink_window_full else None,
-                             resp_rate, live_bpm)
+                s.baseline.add(now, status_code, blink_rate if blink_window_full else None,
+                               resp_rate, live_bpm)
             composure = evaluate_composure(
-                baseline.ready, baseline.mean("blink"), baseline.mean("breath"),
-                baseline.mean("heart"), blink_rate, resp_rate, live_bpm)
+                s.baseline.ready, s.baseline.mean("blink"), s.baseline.mean("breath"),
+                s.baseline.mean("heart"), blink_rate, resp_rate, live_bpm)
 
+            if shared.current_session() != s.id:
+                continue          # a new session started mid-frame; don't publish stale values
             shared.set_readings(
+                session={"id": s.id, "source": args.source},
                 heart_rate=_num(live_bpm),
                 hr_source=hr_source,
-                heart_snr_db=_num(heart.snr_db) if rppg_hr is None else None,
+                heart_snr_db=_num(s.heart.snr_db) if rppg_hr is None else None,
                 signal_quality=_num(rppg_hr.sqi) if rppg_hr is not None else None,
                 breathing_rate=_num(resp_rate),
-                breathing_channel=breathing.channel_name if resp_rate is not None else None,
+                breathing_channel=s.breathing.channel_name if resp_rate is not None else None,
                 blink_rate=_num(blink_rate),
                 signal_status=status_code,
                 camera_fps=_num(camera_fps),
                 processed_fps=_num(fps),
                 face_found=face_found,
-                shoulders_in_view=bool(face_found and chest.box is not None),
+                shoulders_in_view=bool(face_found and s.chest.box is not None),
                 average_heart_rate={
-                    "duration_sec": _num(average.duration),
-                    "recorded_sec": _num(average.recorded_sec),
-                    "progress": _num(average.progress),
-                    "running_average": _num(average.running_average),
-                    "done": average.done,
-                    "result": _num(average.result),
-                    "paused": average.paused,
-                    "readings": len(average.readings),
+                    "duration_sec": _num(s.average.duration),
+                    "recorded_sec": _num(s.average.recorded_sec),
+                    "progress": _num(s.average.progress),
+                    "running_average": _num(s.average.running_average),
+                    "done": s.average.done,
+                    "result": _num(s.average.result),
+                    "paused": s.average.paused,
+                    "readings": len(s.average.readings),
                 },
+                pulse_wave=wave_for_json(pulse_wave, pulse_fs, 6) if face_found else None,
+                breath_wave=wave_for_json(s.breathing.waveform, RESP_FS, 30),
                 composure=composure,
-                baseline={"ready": baseline.ready,
-                          "seconds_collected": _num(baseline.seconds_collected(now)),
-                          "waiting_for": baseline.missing(),
-                          "blink_rate": _num(baseline.mean("blink")),
-                          "breathing_rate": _num(baseline.mean("breath")),
-                          "heart_rate": _num(baseline.mean("heart"))},
+                baseline={"ready": s.baseline.ready,
+                          "seconds_collected": _num(s.baseline.seconds_collected(now)),
+                          "waiting_for": s.baseline.missing(),
+                          "blink_rate": _num(s.baseline.mean("blink")),
+                          "breathing_rate": _num(s.baseline.mean("breath")),
+                          "heart_rate": _num(s.baseline.mean("heart"))},
                 updated_at=time.monotonic(),
             )
     except BaseException as exc:   # includes SystemExit from CameraSource / RppgHeartRate
@@ -425,18 +576,25 @@ def processing_loop(args, shared, stop):
 WEB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
 
 # Only this server's own files may load; no inline scripts, no outside hosts.
+# media-src/blob: lets the page show its own camera stream.
 SECURITY_HEADERS = {
-    "Content-Security-Policy": ("default-src 'self'; img-src 'self'; script-src 'self'; "
-                                "style-src 'self'; connect-src 'self'; frame-ancestors 'none'; "
+    "Content-Security-Policy": ("default-src 'self'; img-src 'self' blob: data:; "
+                                "media-src 'self' blob:; script-src 'self'; style-src 'self'; "
+                                "connect-src 'self'; frame-ancestors 'none'; "
                                 "base-uri 'none'; form-action 'none'"),
     "X-Content-Type-Options": "nosniff",
     "Referrer-Policy": "no-referrer",
+    # Camera only for this page itself; never for embedded content.
+    "Permissions-Policy": "camera=(self), microphone=(), geolocation=()",
 }
+CLIENT_HEADER = "X-Cuore-Client"   # custom header: other sites can't send it without CORS
 
 
-def create_app(shared, port):
+def create_app(shared, port, browser_source):
     web = Flask(__name__, static_folder=WEB_DIR, static_url_path="/static")
+    web.config["MAX_CONTENT_LENGTH"] = MAX_FRAME_BYTES
     allowed_hosts = {f"127.0.0.1:{port}", f"localhost:{port}"}
+    allowed_origins = {f"http://{host}" for host in allowed_hosts}
 
     @web.before_request
     def local_host_only():
@@ -444,6 +602,12 @@ def create_app(shared, port):
         # sends its own Host header and is refused here.
         if request.host not in allowed_hosts:
             abort(403)
+        # State-changing requests must come from this page (CSRF): same origin and
+        # a custom header, which a cross-site form or fetch cannot add.
+        if request.method == "POST":
+            if (request.headers.get("Origin") not in allowed_origins
+                    or request.headers.get(CLIENT_HEADER) != "1"):
+                abort(403)
 
     @web.after_request
     def security_headers(response):
@@ -461,6 +625,34 @@ def create_app(shared, port):
         response = jsonify(shared.get_readings())
         response.headers["Cache-Control"] = "no-store"
         return response
+
+    @web.post("/api/session/start")
+    def session_start():
+        return jsonify({"session_id": shared.start_session(), "source": shared.source})
+
+    @web.post("/api/frame")
+    def frame_upload():
+        if browser_source is None:
+            abort(404)                                # webcam mode: Python owns the camera
+        if request.mimetype != "image/jpeg":
+            abort(415)
+        try:
+            session_id = int(request.headers.get("X-Session", ""))
+            capture_time = float(request.headers.get("X-Capture-Time", ""))
+        except ValueError:
+            abort(400)
+        if not math.isfinite(capture_time) or capture_time < 0:
+            abort(400)
+        if session_id != shared.current_session():
+            abort(409)                                # frame from an old session
+        data = np.frombuffer(request.get_data(cache=False), dtype=np.uint8)
+        frame = cv2.imdecode(data, cv2.IMREAD_COLOR) if data.size else None
+        if frame is None:
+            abort(400)
+        if max(frame.shape[:2]) > MAX_FRAME_SIDE or min(frame.shape[:2]) < 64:
+            abort(400)
+        browser_source.push(frame, capture_time, session_id)
+        return ("", 204)
 
     @web.get("/video")
     def video():
@@ -500,7 +692,10 @@ def check_app_version():
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Serve live vital-sign readings on 127.0.0.1")
-    parser.add_argument("--camera", type=int, default=0, help="webcam index")
+    parser.add_argument("--source", choices=["browser", "webcam"], default="browser",
+                        help="browser: the page opens the camera (default); "
+                             "webcam: Python opens it, as app.py does")
+    parser.add_argument("--camera", type=int, default=0, help="webcam index (--source webcam)")
     parser.add_argument("--width", type=int, help="ask the camera for this width (optional)")
     parser.add_argument("--height", type=int, help="ask the camera for this height (optional)")
     parser.add_argument("--backend", choices=["auto", "dshow", "msmf"], default="auto",
@@ -524,14 +719,16 @@ def parse_args():
 def main():
     args = parse_args()
     check_app_version()
-    shared = SharedState()
+    shared = SharedState(args.source)
+    browser_source = BrowserSource() if args.source == "browser" else None
     stop = threading.Event()
-    worker = threading.Thread(target=processing_loop, args=(args, shared, stop), daemon=True)
+    worker = threading.Thread(target=processing_loop,
+                              args=(args, shared, stop, browser_source), daemon=True)
     worker.start()
     print(f"Open http://{HOST}:{args.port}/  (Ctrl+C to stop)")
     try:
-        create_app(shared, args.port).run(host=HOST, port=args.port, debug=False,
-                                          threaded=True, use_reloader=False)
+        create_app(shared, args.port, browser_source).run(
+            host=HOST, port=args.port, debug=False, threaded=True, use_reloader=False)
     finally:
         stop.set()
         worker.join(timeout=5.0)
