@@ -4,3 +4,4 @@ numpy
 scipy
 mss
 pytest
+flask==3.1.3
