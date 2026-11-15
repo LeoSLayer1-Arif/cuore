@@ -64,7 +64,7 @@
           <a class="btn btn-ghost btn-lg" href="#how">See How It Works<svg class="ic"><use href="#i-down"/></svg></a>
         </div>
         <ul class="facts mono" aria-label="At a glance">
-          <li><b>3</b> signals</li><li><b>1</b> ordinary webcam</li><li><b>0</b> frames stored</li><li><b>127.0.0.1</b> only</li>
+          <li><b>3</b> signals</li><li><b>1</b> ordinary webcam</li><li><b>0</b> frames stored</li><li><b>0</b> cloud servers</li>
         </ul>
       </div>
 
@@ -328,7 +328,7 @@
           <p class="sec-sub">CUORE has no cloud service and no account. The measuring app and its server both run on your computer, and every claim below can be checked in the source.</p>
         </div>
         <ul class="priv">
-          <li><svg class="ic"><use href="#i-lock"/></svg><div><b>Local server only</b><span>The CUORE server listens on 127.0.0.1, so other devices on your network can't reach it.</span></div></li>
+          <li><svg class="ic"><use href="#i-lock"/></svg><div><b>Local server only</b><span>By default the CUORE server listens on 127.0.0.1, so other devices on your network can't reach it. Phone mode (<code>--lan</code>) is opt-in: it serves https on your home network, and only devices that enter the pairing code shown on your computer can connect.</span></div></li>
           <li><svg class="ic"><use href="#i-lock"/></svg><div><b>Frames are processed, not kept</b><span>Video frames are analysed in memory. The server writes no images or video to disk.</span></div></li>
           <li><svg class="ic"><use href="#i-lock"/></svg><div><b>The browser asks first</b><span>The camera only turns on after you allow it, and it stops when you end the session.</span></div></li>
           <li><svg class="ic"><use href="#i-lock"/></svg><div><b>No third parties on the page</b><span>No analytics, trackers, external fonts or CDNs. A strict content security policy blocks loading anything from elsewhere.</span></div></li>
@@ -390,7 +390,7 @@
           <details><summary><span class="mono">02</span>Why does it need about two minutes?</summary><p>Each measurement needs its own window (10 s for heart rate, 20–30 s for breathing, 60 s for blinks), and each baseline needs 60 s after its first valid reading with at least 30 s of valid data. Shortening those windows would make the numbers less trustworthy.</p></details>
           <details><summary><span class="mono">03</span>What is the 45-second quick read?</summary><p>An experimental short session. Heart rate and usually breathing can be measured in 45 s; blink rate stays provisional, and no baseline or composure result is possible. The report says so plainly.</p></details>
           <details><summary><span class="mono">04</span>My heart signal says “weak”. What helps?</summary><p>Face a steady light source, avoid a bright window behind you, sit still and keep your face in frame. Breathing and blinks keep measuring independently in the meantime.</p></details>
-          <details><summary><span class="mono">05</span>Does my video go to a server?</summary><p>Only to the CUORE server running on your own computer at 127.0.0.1. It analyses frames in memory and doesn't save them. There is no remote server.</p></details>
+          <details><summary><span class="mono">05</span>Does my video go to a server?</summary><p>Only to the CUORE server running on your own computer: directly at 127.0.0.1, or over your home Wi-Fi from a paired phone in phone mode. It analyses frames in memory and doesn't save them. There is no remote server.</p></details>
           <details><summary><span class="mono">06</span>Does it work on my phone?</summary><p>Yes, through home Wi-Fi mode. Start CUORE on your computer with <code>--lan</code>, open the address it prints on your phone, and enter the pairing code. Your phone's video goes to your own computer over your Wi-Fi, is processed in memory there, and is not sent anywhere else. Measuring entirely on the phone, without a computer, is planned.</p></details>
           <details><summary><span class="mono">07</span>What does “composure” mean?</summary><p>How your current readings compare with your own baseline. “Elevated” means your blink rate fell well below your baseline, or two signals shifted together. It is deliberately not called stress.</p></details>
         </div>
@@ -403,7 +403,7 @@
         <p class="eyebrow">Two quiet minutes</p>
         <h2 id="close-title" class="h-close">Sit still.<br>Meet your baseline.</h2>
         <a class="btn btn-invert btn-lg" href="/app">Open CUORE<svg class="ic"><use href="#i-arrow"/></svg></a>
-        <p class="close-note mono">Runs at 127.0.0.1 · camera required · not a medical device</p>
+        <p class="close-note mono">Runs on your own computer · camera required · not a medical device</p>
       </div>
     </section>
   </main>

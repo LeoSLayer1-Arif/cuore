@@ -351,7 +351,7 @@ function drawReport(r, m) {
   r.text("How to read this report", M, y + 12, { size: 16, font: "bold" });
   y += 28;
   const notes = [
-    ["Reliable", "The value passed its own quality check. Only reliable heart-rate seconds are averaged."],
+    ["Reliable", "The value passed its own quality check. Only reliable heart-rate seconds after the first 10 s calibration are averaged."],
     ["Provisional", "The estimator produced a value but its quality was at or below the pass line (heart rate), or the count covered less than its full window (blinks). Shown, labelled, never averaged as reliable."],
     ["Unavailable", "No reading: not enough signal yet, quality too low (breathing), or the face was out of view. Left blank, never filled in."],
     ["Heart rate", `Remote photoplethysmography (rPPG): a neural model (FacePhys, via open-rppg) recovers the pulse wave from skin-colour changes. 10 s window, updated each second; reliable only when signal quality is above ${sqiPass() === null ? "its pass line" : sqiPass().toFixed(2)}.`],

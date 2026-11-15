@@ -12,17 +12,22 @@ the time they were captured, and they go through the same processing.
     GET  /video              MJPEG stream of the annotated frames (app.py's dashboard)
     POST /api/session/start  start a fresh session: new baseline, estimators reset
     POST /api/frame          one camera frame from the page (browser mode only)
+    POST /api/pair           pair a device with the printed code (--lan mode only)
 
 Usage:
     python server.py                      # browser camera, http://127.0.0.1:5001/
+    python server.py --lan                # phone mode: https on the home network, pairing code
     python server.py --source webcam      # Python opens the camera itself, as before
     python server.py --hr colour          # the app's own colour-based heart rate
     python server.py --avg-seconds 90 --port 5002
 
-Bound to 127.0.0.1 only. Press Ctrl+C to stop.
+Bound to 127.0.0.1 only, unless --lan is given (then this computer's home-network
+address, https, and every device must pair). Press Ctrl+C to stop.
 
-app.py and vitals.py are imported, not changed. No reading is recomputed here:
-values are copied out of the estimators exactly as app.py displays them.
+app.py and vitals.py are imported, not changed by this server. Heart rate,
+breathing and blink values are copied out of their estimators exactly as app.py
+displays them; this server adds per-metric baselines, composure, and which heart
+readings count toward the session average (after the first 10 s calibration).
 """
 import argparse
 import hmac
