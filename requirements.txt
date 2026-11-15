@@ -5,3 +5,6 @@ scipy
 mss
 pytest
 flask==3.1.3
+# heart rate (rPPG model) and the pkg_resources it still imports
+open-rppg==0.1.1
+setuptools==80.10.2

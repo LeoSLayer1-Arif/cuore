@@ -1,0 +1,16 @@
+{
+  "name": "CUORE · personal vitals",
+  "short_name": "CUORE",
+  "description": "Heart rate, breathing and blinks from your webcam, compared with your own baseline. Runs on your computer.",
+  "start_url": "/app",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#e5e3dd",
+  "theme_color": "#e5e3dd",
+  "icons": [
+    { "src": "/static/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/static/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/static/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

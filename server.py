@@ -5,7 +5,8 @@ thread and serves the CUORE web UI. By default the camera is opened by the
 BROWSER (its own permission prompt); the page sends frames here, stamped with
 the time they were captured, and they go through the same processing.
 
-    GET  /                   the web UI (web/index.html, web/app.js, web/app.css)
+    GET  /                   the product homepage (web/home.html, web/home.css, web/home.js)
+    GET  /app                the measurement app (web/index.html, web/app.js, web/app.css)
     GET  /static/...         the UI's files
     GET  /api/readings       latest readings as JSON
     GET  /video              MJPEG stream of the annotated frames (app.py's dashboard)
@@ -24,8 +25,14 @@ app.py and vitals.py are imported, not changed. No reading is recomputed here:
 values are copied out of the estimators exactly as app.py displays them.
 """
 import argparse
+import hmac
+import ipaddress
 import math
 import os
+import secrets
+import shutil
+import socket
+import subprocess
 import threading
 import time
 from collections import deque
@@ -661,16 +668,119 @@ SECURITY_HEADERS = {
 }
 CLIENT_HEADER = "X-Cuore-Client"   # custom header: other sites can't send it without CORS
 
+# ----- opt-in home Wi-Fi mode (--lan) -----
+# Lets a phone on the same Wi-Fi use this computer's CUORE server. Off by default.
+# Video from a paired phone comes here over the local network, is processed in
+# memory like any other frame, and is not sent anywhere else.
+PAIR_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"   # no 0/O, 1/I/L: easy to type on a phone
+PAIR_LEN = 8                                          # 31^8 ≈ 8.5e11 codes
+PAIR_FAILS_PER_MIN = 10                               # per device address
+PAIR_FAILS_TOTAL = 50                                 # then pairing stops until restart
+PAIR_COOKIE = "cuore_pair"
+TLS_DIR = os.path.join(os.path.expanduser("~"), ".cuore", "tls")
 
-def create_app(shared, port, browser_source):
+
+def lan_address():
+    """This computer's IPv4 address on the local network. Connecting a UDP socket
+    sends no packet; it only asks the OS which interface it would use. The target
+    is a documentation-only address that is never routed."""
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+        try:
+            s.connect(("192.0.2.1", 9))
+        except OSError as e:
+            raise SystemExit(f"--lan: no network connection found ({e}).") from e
+        ip = s.getsockname()[0]
+    addr = ipaddress.ip_address(ip)
+    if not addr.is_private or addr.is_loopback:
+        raise SystemExit(f"--lan only runs on a private home or office network; this computer's address is {ip}.")
+    return ip
+
+
+def tls_files(ip):
+    """A self-signed certificate for this address, made once with the system's openssl
+    and kept in ~/.cuore/tls (never in the project). Phones only allow the camera on
+    https pages, which is why LAN mode needs one."""
+    os.makedirs(TLS_DIR, mode=0o700, exist_ok=True)
+    cert = os.path.join(TLS_DIR, f"cert-{ip}.pem")
+    key = os.path.join(TLS_DIR, f"key-{ip}.pem")
+    fresh = os.path.exists(cert) and time.time() - os.path.getmtime(cert) < 360 * 86400
+    if fresh and os.path.exists(key):
+        return cert, key
+    openssl = shutil.which("openssl")
+    if openssl is None:
+        raise SystemExit("--lan needs the openssl command to create a certificate. Install OpenSSL and try again.")
+    old = os.umask(0o077)
+    try:
+        subprocess.run([openssl, "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-sha256", "-days", "365",
+                        "-keyout", key, "-out", cert, "-subj", "/CN=CUORE on this computer",
+                        "-addext", f"subjectAltName=IP:{ip}"],
+                       check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=60)
+    except subprocess.CalledProcessError as e:
+        raise SystemExit("--lan: openssl couldn't create the certificate: "
+                         + e.stderr.decode(errors="replace").strip()) from e
+    finally:
+        os.umask(old)
+    os.chmod(key, 0o600)
+    return cert, key
+
+
+class Pairing:
+    """One code per server run. A device that enters it gets a random session token
+    in an HttpOnly, Secure, SameSite=Strict cookie; the code itself is never stored
+    in the browser. Failed attempts are rate limited and logged without the code."""
+
+    def __init__(self):
+        self.code = "".join(secrets.choice(PAIR_ALPHABET) for _ in range(PAIR_LEN))
+        self.tokens = set()
+        self.fails = {}
+        self.total_fails = 0
+        self.lock = threading.Lock()
+
+    @property
+    def display(self):
+        return f"{self.code[:4]}-{self.code[4:]}"
+
+    def try_pair(self, device, attempt):
+        now = time.monotonic()
+        with self.lock:
+            recent = [t for t in self.fails.get(device, []) if now - t < 60.0]
+            self.fails[device] = recent
+            if len(recent) >= PAIR_FAILS_PER_MIN or self.total_fails >= PAIR_FAILS_TOTAL:
+                return None, "locked"
+            cleaned = "".join(ch for ch in str(attempt).upper() if ch.isalnum())[:PAIR_LEN * 2]
+            if hmac.compare_digest(cleaned.encode(), self.code.encode()):
+                token = secrets.token_urlsafe(32)
+                self.tokens.add(token)
+                return token, "ok"
+            recent.append(now)
+            self.total_fails += 1
+            return None, "wrong"
+
+    def is_paired(self, token):
+        if not token:
+            return False
+        with self.lock:
+            return any(hmac.compare_digest(token, t) for t in self.tokens)
+
+
+def needs_pairing(path):
+    """Readings, frames and video need a paired device; the pages themselves don't."""
+    return (path.startswith("/api/") and path != "/api/pair") or path == "/video"
+
+
+def create_app(shared, port, browser_source, lan=None):
     web = Flask(__name__, static_folder=WEB_DIR, static_url_path="/static")
     web.config["MAX_CONTENT_LENGTH"] = MAX_FRAME_BYTES
-    allowed_hosts = {f"127.0.0.1:{port}", f"localhost:{port}"}
-    allowed_origins = {f"http://{host}" for host in allowed_hosts}
+    if lan:
+        allowed_hosts = {f"{lan['ip']}:{port}"}
+        allowed_origins = {f"https://{lan['ip']}:{port}"}
+    else:
+        allowed_hosts = {f"127.0.0.1:{port}", f"localhost:{port}"}
+        allowed_origins = {f"http://{host}" for host in allowed_hosts}
 
     @web.before_request
     def local_host_only():
-        # Blocks DNS rebinding: a page on another domain pointed at 127.0.0.1
+        # Blocks DNS rebinding: a page on another domain pointed at this server
         # sends its own Host header and is refused here.
         if request.host not in allowed_hosts:
             abort(403)
@@ -680,17 +790,45 @@ def create_app(shared, port, browser_source):
             if (request.headers.get("Origin") not in allowed_origins
                     or request.headers.get(CLIENT_HEADER) != "1"):
                 abort(403)
+        # LAN mode: every device, this computer included, pairs before it gets data.
+        if lan and needs_pairing(request.path) and not lan["pairing"].is_paired(request.cookies.get(PAIR_COOKIE)):
+            abort(401)
+
+    @web.post("/api/pair")
+    def pair():
+        if not lan:
+            abort(404)
+        body = request.get_json(silent=True) or {}
+        token, result = lan["pairing"].try_pair(request.remote_addr, body.get("code", ""))
+        if result == "locked":
+            print(f"CUORE: pairing refused for {request.remote_addr} (too many attempts)", flush=True)
+            return jsonify({"paired": False, "error": "Too many attempts. Wait a minute and try again."}), 429
+        if token is None:
+            print(f"CUORE: wrong pairing code from {request.remote_addr}", flush=True)
+            return jsonify({"paired": False, "error": "That code doesn't match the one in the CUORE terminal."}), 403
+        print(f"CUORE: device paired ({request.remote_addr})", flush=True)
+        response = jsonify({"paired": True})
+        response.set_cookie(PAIR_COOKIE, token, httponly=True, secure=True, samesite="Strict", path="/")
+        response.headers["Cache-Control"] = "no-store"
+        return response
 
     @web.after_request
     def security_headers(response):
         response.headers.update(SECURITY_HEADERS)
         return response
 
-    @web.get("/")
-    def index():
-        response = send_from_directory(WEB_DIR, "index.html")
+    def page(name):
+        response = send_from_directory(WEB_DIR, name)
         response.headers["Cache-Control"] = "no-store"
         return response
+
+    @web.get("/")
+    def home():
+        return page("home.html")          # product homepage
+
+    @web.get("/app")
+    def index():
+        return page("index.html")         # the measurement app
 
     @web.get("/api/readings")
     def readings():
@@ -780,6 +918,10 @@ def parse_args():
                         help="how many seconds of heart rate readings the average uses (default 120)")
     # 5000 is taken by macOS AirPlay Receiver, which answers with an empty 403.
     parser.add_argument("--port", type=int, default=5001, help="port on 127.0.0.1")
+    parser.add_argument("--lan", action="store_true",
+                        help="home Wi-Fi mode: serve https on this computer's local network address so a "
+                             "phone on the same Wi-Fi can pair and measure. Video comes to this computer "
+                             "only. Off by default.")
     args = parser.parse_args()
     if args.avg_seconds < 10:
         parser.error("--avg-seconds must be at least 10")
@@ -796,11 +938,27 @@ def main():
     stop = threading.Event()
     worker = threading.Thread(target=processing_loop,
                               args=(args, shared, stop, browser_source), daemon=True)
+    host, ssl_context, lan = HOST, None, None
+    if args.lan:
+        ip = lan_address()
+        ssl_context = tls_files(ip)
+        lan = {"ip": ip, "pairing": Pairing()}
+        host = ip                                    # this network only, not every interface
     worker.start()
-    print(f"Open http://{HOST}:{args.port}/  (Ctrl+C to stop)")
+    if lan:
+        url = f"https://{lan['ip']}:{args.port}/app"
+        print("\nCUORE · home Wi-Fi mode\n"
+              f"  On your phone or this computer (same Wi-Fi), open:  {url}\n"
+              f"  Pairing code:  {lan['pairing'].display}\n"
+              "  The browser will warn that the certificate isn't trusted: it was made on this computer\n"
+              "  for this address. Safari: Show Details > visit this website. Chrome: Advanced > Proceed.\n"
+              "  Video from paired devices comes to this computer over your Wi-Fi, is processed in\n"
+              "  memory here, and is not sent anywhere else. Ctrl+C stops the server.\n", flush=True)
+    else:
+        print(f"Open http://{HOST}:{args.port}/  (Ctrl+C to stop)")
     try:
-        create_app(shared, args.port, browser_source).run(
-            host=HOST, port=args.port, debug=False, threaded=True, use_reloader=False)
+        create_app(shared, args.port, browser_source, lan).run(
+            host=host, port=args.port, debug=False, threaded=True, use_reloader=False, ssl_context=ssl_context)
     finally:
         stop.set()
         worker.join(timeout=5.0)

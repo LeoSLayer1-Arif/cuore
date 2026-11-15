@@ -3,13 +3,21 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="color-scheme" content="dark light">
-  <title>CUORE · personal vitals</title>
+  <meta name="color-scheme" content="light">
+  <title>CUORE · App</title>
+  <link rel="icon" href="/static/icon-192.png">
+  <link rel="manifest" href="/static/manifest.json">
+  <meta name="theme-color" content="#e5e3dd">
+  <link rel="apple-touch-icon" href="/static/icon-180.png">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="CUORE">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
   <link rel="stylesheet" href="/static/app.css">
   <script src="/static/app.js" defer></script>
+  <script src="/static/report.js" defer></script>
 </head>
-<!-- Two design directions share this markup. body.style-nocturne (B) or body.style-instrument (A). -->
-<body class="style-nocturne">
+<body>
 
   <svg class="defs" aria-hidden="true" focusable="false">
     <symbol id="i-heart" viewBox="0 0 24 24"><path d="M12 20s-7.2-4.3-9.4-9A5.1 5.1 0 0 1 12 6.3 5.1 5.1 0 0 1 21.4 11c-2.2 4.7-9.4 9-9.4 9Z"/></symbol>
@@ -22,33 +30,22 @@
     <symbol id="i-lock" viewBox="0 0 24 24"><rect x="5" y="10.5" width="14" height="10" rx="2"/><path d="M8 10.5V8a4 4 0 0 1 8 0v2.5"/></symbol>
     <symbol id="i-camera" viewBox="0 0 24 24"><path d="M4 7.5h3l1.6-2.5h6.8L17 7.5h3v11H4v-11Z"/><circle cx="12" cy="13" r="3.4"/></symbol>
     <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5v.5"/></symbol>
-    <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.3 5.3l1.4 1.4M17.3 17.3l1.4 1.4M5.3 18.7l1.4-1.4M17.3 6.7l1.4-1.4"/></symbol>
-    <symbol id="i-moon" viewBox="0 0 24 24"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5Z"/></symbol>
-    <symbol id="i-chev" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></symbol>
     <symbol id="i-wind" viewBox="0 0 24 24"><path d="M3 9h11a3 3 0 1 0-3-3M3 15h15a3 3 0 1 1-3 3M3 12h7"/></symbol>
+    <symbol id="i-down" viewBox="0 0 24 24"><path d="M12 4v11m-5-5 5 5 5-5M5 20h14"/></symbol>
+    <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M5 12h14m-5-5 5 5-5 5"/></symbol>
   </svg>
-
-  <!-- Style switch: compare the two directions. Remove once one is chosen. -->
-  <div class="style-switch" role="radiogroup" aria-label="Design direction">
-    <button class="style-btn" type="button" role="radio" aria-checked="true" data-style="nocturne">B · Nocturne</button>
-    <button class="style-btn" type="button" role="radio" aria-checked="false" data-style="instrument">A · Instrument</button>
-    <button class="style-btn" type="button" role="radio" aria-checked="false" data-style="living">C · Living</button>
-    <button class="mode-btn" id="mode-btn" type="button" aria-label="Switch to light mode" hidden>
-      <svg class="ic i-sun" aria-hidden="true"><use href="#i-sun"/></svg><svg class="ic i-moon" aria-hidden="true"><use href="#i-moon"/></svg>
-    </button>
-  </div>
   <p id="perf" class="perf mono" hidden></p>
 
   <!-- ?diag: measurement diagnostics. Exports numbers only; never images or video. -->
   <aside id="diag" class="diag mono folded" aria-label="Measurement diagnostics" hidden>
-    <div class="diag-head"><b>diagnostics</b><span id="diag-cfg"></span><button id="diag-fold" class="diag-fold" type="button" aria-expanded="false" aria-controls="diag-body">show</button></div>
+    <div class="diag-head"><b>Diagnostics</b><span id="diag-cfg"></span><button id="diag-fold" class="diag-fold" type="button" aria-expanded="false" aria-controls="diag-body">Show</button></div>
     <div id="diag-body">
     <dl id="diag-list"></dl>
     <div class="diag-stats" id="diag-stats"></div>
-    <label class="diag-cond">condition <input id="diag-cond" type="text" maxlength="40" placeholder="desk lamp, window behind" autocomplete="off"></label>
+    <label class="diag-cond">Condition <input id="diag-cond" type="text" maxlength="40" placeholder="Desk lamp, window behind" autocomplete="off"></label>
     <div class="diag-actions">
       <button id="diag-csv" class="btn btn-ghost btn-sm" type="button">Download CSV</button>
-      <button id="diag-reset" class="btn btn-ghost btn-sm" type="button">Reset stats</button>
+      <button id="diag-reset" class="btn btn-ghost btn-sm" type="button">Reset Stats</button>
     </div>
     </div>
   </aside>
@@ -56,18 +53,43 @@
   <!-- ===================================================== START -->
   <section id="screen-start" class="screen screen-start" aria-labelledby="start-title">
     <header class="bar">
-      <div class="brand"><img class="logo" src="/static/logo.png" alt="CUORE"></div>
-      <span class="bar-note mono">personal vitals · runs on this computer</span>
+      <a class="brand" href="/" aria-label="CUORE home"><img class="logo" src="/static/logo.png" alt="CUORE"></a>
+      <span class="bar-note mono">Runs on this computer</span>
     </header>
 
     <div class="start">
       <div class="start-copy">
-        <p class="kicker">Contactless vitals</p>
-        <h1 id="start-title" class="headline">Your body keeps<br>a quiet rhythm.<br><em>CUORE listens.</em></h1>
-        <p class="lede">A webcam is enough. CUORE reads your heart rate, breathing and blinking, learns what's normal for you in about a minute, then shows you when you drift from it.</p>
+        <p class="kicker">New session</p>
+        <h1 id="start-title" class="headline">Sit still.<br>Face the light.<br><em>CUORE listens.</em></h1>
+        <p class="lede">Your webcam reads heart rate, breathing and blinks. Readings appear as soon as each one is ready, and CUORE learns your personal baseline while you sit.</p>
+
+        <!-- home Wi-Fi mode only: each device pairs with the code printed in the CUORE terminal -->
+        <form id="pair-form" class="pair" hidden>
+          <p class="kicker">Pair this device</p>
+          <p class="pair-note">CUORE is running in home Wi-Fi mode. Enter the pairing code shown in the terminal on the computer running CUORE.</p>
+          <div class="pair-row">
+            <input id="pair-code" class="mono" type="text" inputmode="text" autocomplete="one-time-code" autocapitalize="characters" spellcheck="false" maxlength="9" placeholder="ABCD-EFGH" aria-label="Pairing code" required>
+            <button id="btn-pair" class="btn btn-primary" type="submit">Pair</button>
+          </div>
+          <p id="pair-error" class="error" role="alert" hidden></p>
+        </form>
+
+        <fieldset class="length" aria-describedby="length-note">
+          <legend class="kicker">Session length</legend>
+          <label class="length-opt">
+            <input type="radio" name="length" value="open" checked>
+            <span><b>Open-ended</b><small>Recommended. Baselines and composure need at least 2 minutes.</small></span>
+          </label>
+          <label class="length-opt">
+            <input type="radio" name="length" value="45">
+            <span><b>45-second quick read</b><small>Experimental. Heart rate and breathing only; no baseline or composure.</small></span>
+          </label>
+        </fieldset>
+        <p id="length-note" class="fine">Why the difference: each baseline needs 60 s after its first valid reading, and the blink count needs a full 60 s window.</p>
+
         <div class="cta">
-          <button id="btn-start" class="btn btn-primary btn-lg" type="button">Start calibrating</button>
-          <span class="cta-note mono">≈ 70 s · camera required</span>
+          <button id="btn-start" class="btn btn-primary btn-lg" type="button">Start Calibrating</button>
+          <span class="cta-note mono">Camera required</span>
         </div>
         <p id="start-error" class="error" role="alert" hidden></p>
       </div>
@@ -76,14 +98,8 @@
         <div class="heart-stage" data-heart data-demo></div>
       </figure>
 
-      <ol class="how">
-        <li><span class="how-n mono">01</span><b>Skin colour</b><span>Each heartbeat changes your skin's colour very slightly. The camera can see it; you can't.</span></li>
-        <li><span class="how-n mono">02</span><b>Chest motion</b><span>Breathing moves your shoulders. CUORE tracks that motion frame to frame.</span></li>
-        <li><span class="how-n mono">03</span><b>Eye landmarks</b><span>478 points on your face. When your eyelids close and open, that's a blink.</span></li>
-      </ol>
-
       <ul class="trust">
-        <li><svg class="ic"><use href="#i-lock"/></svg>Video is processed on this computer and never uploaded.</li>
+        <li><svg class="ic"><use href="#i-lock"/></svg>Video is processed on this computer and never stored.</li>
         <li><svg class="ic"><use href="#i-camera"/></svg>Your browser asks before the camera turns on.</li>
         <li><svg class="ic"><use href="#i-info"/></svg>For awareness, not diagnosis. CUORE is not a medical device.</li>
       </ul>
@@ -93,8 +109,8 @@
   <!-- ===================================================== CALIBRATE -->
   <section id="screen-calibrate" class="screen screen-cal" aria-labelledby="cal-title" hidden>
     <header class="bar">
-      <div class="brand"><img class="logo" src="/static/logo.png" alt="CUORE"></div>
-      <ol class="steps mono" aria-label="Progress"><li class="done">camera</li><li class="now" aria-current="step">baseline</li><li>live</li></ol>
+      <a class="brand" href="/" aria-label="CUORE home"><img class="logo" src="/static/logo.png" alt="CUORE"></a>
+      <ol class="steps mono" aria-label="Progress"><li class="done">Camera</li><li class="now" aria-current="step">First readings</li><li>Live</li></ol>
       <button id="btn-cancel" class="btn btn-ghost" type="button">Cancel</button>
     </header>
 
@@ -104,15 +120,15 @@
           <video id="cal-video" class="mirror" autoplay muted playsinline></video>
           <img id="cal-img" alt="Camera" hidden>
           <div class="face-guide" aria-hidden="true"></div>
-          <span id="cal-face" class="cam-tag mono">looking for your face</span>
+          <span id="cal-face" class="cam-tag mono">Looking for your face</span>
         </div>
-        <p class="hint">Face the camera. Sit back so your shoulders show. Keep the light steady.</p>
+        <p class="hint">Face the camera. Sit back so your shoulders show. Keep the light steady and in front of you.</p>
       </div>
 
       <div class="cal-side">
         <p class="kicker">Step 2 of 3</p>
         <h1 id="cal-title" class="headline md">Getting your<br>first readings</h1>
-        <p class="lede sm">Readings appear as soon as each one is ready. Your baseline keeps learning in the background, separately for heart rate, breathing and blinks.</p>
+        <p class="lede sm" id="cal-lede">Readings appear as soon as each one is ready. Your baseline keeps learning in the background, separately for heart rate, breathing and blinks.</p>
 
         <div class="cal-meter">
           <div class="ring-wrap">
@@ -121,21 +137,21 @@
               <circle class="ring-track" cx="60" cy="60" r="50"/>
               <circle id="ring-bar" class="ring-bar" cx="60" cy="60" r="50"/>
             </svg>
-            <div class="ring-label"><span id="ring-secs" class="ring-num">0</span><span id="ring-sub" class="ring-sub mono">waiting for a good signal</span></div>
+            <div class="ring-label"><span id="ring-secs" class="ring-num">0</span><span id="ring-sub" class="ring-sub mono">Until the first reading</span></div>
           </div>
           <div class="cal-readouts">
             <div class="quality" aria-live="polite">
-              <span class="mono">signal</span>
+              <span class="mono">Heart signal</span>
               <div class="qbars" id="cal-q" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></div>
               <b id="cal-q-text" class="mono">--</b>
             </div>
             <ul class="checks" id="checklist">
-              <li data-check="camera"><span class="box"><svg><use href="#i-check"/></svg></span><b>Camera</b><small>frames arriving</small></li>
-              <li data-check="face"><span class="box"><svg><use href="#i-check"/></svg></span><b>Face</b><small>landmarks found</small></li>
+              <li data-check="camera"><span class="box"><svg><use href="#i-check"/></svg></span><b>Camera</b><small>Frames arriving</small></li>
+              <li data-check="face"><span class="box"><svg><use href="#i-check"/></svg></span><b>Face</b><small>Landmarks found</small></li>
               <li data-check="heart"><span class="box"><svg><use href="#i-check"/></svg></span><b>Heart rate</b><small>≈ 10 s</small></li>
               <li data-check="breath"><span class="box"><svg><use href="#i-check"/></svg></span><b>Breathing</b><small>≈ 20 s</small></li>
-              <li data-check="blink"><span class="box"><svg><use href="#i-check"/></svg></span><b>Blinks</b><small>a full minute</small></li>
-              <li data-check="signal"><span class="box"><svg><use href="#i-check"/></svg></span><b>Heart signal</b><small>quality for heart rate only</small></li>
+              <li data-check="blink"><span class="box"><svg><use href="#i-check"/></svg></span><b>Blinks</b><small>A full minute</small></li>
+              <li data-check="signal"><span class="box"><svg><use href="#i-check"/></svg></span><b>Heart signal</b><small>Quality for heart rate only</small></li>
             </ul>
           </div>
         </div>
@@ -147,7 +163,7 @@
   <!-- ===================================================== APP -->
   <section id="screen-app" class="screen screen-app" hidden>
     <header class="bar app-bar">
-      <div class="brand"><img class="logo" src="/static/logo.png" alt="CUORE"></div>
+      <a class="brand" href="/" aria-label="CUORE home"><img class="logo" src="/static/logo.png" alt="CUORE"></a>
       <nav class="tabs" role="tablist" aria-label="Views">
         <button class="tab" role="tab" id="tab-live" data-view="live" aria-selected="true" aria-controls="view-live">Live</button>
         <button class="tab" role="tab" id="tab-summary" data-view="summary" aria-selected="false" aria-controls="view-summary" tabindex="-1">Summary</button>
@@ -166,13 +182,16 @@
           </div>
         </div>
         <button id="btn-recal" class="btn btn-ghost hide-sm" type="button">Recalibrate</button>
-        <button id="btn-end" class="btn btn-solid" type="button">End session</button>
+        <button id="btn-end" class="btn btn-solid" type="button">End Session</button>
       </div>
     </header>
 
     <div id="banner" class="banner" role="status" hidden>
       <span id="banner-text"></span>
-      <button id="btn-reconnect" class="btn btn-ghost btn-sm" type="button" hidden>Reconnect camera</button>
+      <button id="btn-reconnect" class="btn btn-ghost btn-sm" type="button" hidden>Reconnect Camera</button>
+    </div>
+    <div id="quick-bar" class="quick-bar mono" role="status" hidden>
+      <span>45-second quick read · experimental</span><i class="quick-track"><i id="quick-fill"></i></i><b id="quick-left">0:45</b>
     </div>
 
     <!-- ---------- LIVE ---------- -->
@@ -185,9 +204,9 @@
             <button id="btn-full" class="thumb-btn" type="button" aria-label="Open camera analysis full screen"><svg class="ic"><use href="#i-expand"/></svg></button>
           </div>
           <p class="kicker">Composure</p>
-          <p class="statement" aria-live="polite"><span id="c-state" class="state" data-state="calibrating">Calibrating</span><span id="c-note" class="c-note">Learning your baseline.</span></p>
+          <p class="statement" aria-live="polite"><span id="c-state" class="state" data-state="calibrating">Learning baseline</span><span id="c-note" class="c-note">Learning your baseline.</span></p>
           <span class="c-basis" id="c-basis"></span>
-          <button id="btn-breathe" class="btn btn-ghost breathe-btn" type="button"><svg class="ic"><use href="#i-wind"/></svg>Breathe with me · 1 min</button>
+          <button id="btn-breathe" class="btn btn-ghost breathe-btn" type="button"><svg class="ic"><use href="#i-wind"/></svg>Breathe With Me · 1 Min</button>
         </div>
 
         <div class="hero-c">
@@ -203,29 +222,38 @@
         </div>
 
         <div class="hero-r">
-          <p class="kicker">Heart rate</p>
-          <p class="figure"><b id="hero-bpm">--</b><small>bpm</small></p>
-          <p class="delta" id="hero-delta">Baseline not set yet</p>
-          <div class="quality small" aria-label="Signal quality">
-            <span class="mono">signal</span>
-            <div class="qbars" id="hero-q" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></div>
-            <b id="hero-q-text" class="mono">--</b>
+          <!-- Session average leads; the live reading sits below it with its own state and signal -->
+          <div class="hr-avg">
+            <p class="kicker hr-kicker"><span>Heart rate · Session average</span><span class="chip" data-state="info">Reliable seconds only</span></p>
+            <p class="figure"><b id="avg-v" class="empty">--</b><small>bpm</small></p>
+            <p class="delta" id="avg-sub">Waiting for reliable readings</p>
           </div>
 
-          <dl class="readouts">
+          <div class="hr-live">
+            <p class="kicker hr-kicker"><span>Heart rate · Live</span><span id="hr-state" class="chip" data-state="none">Waiting</span></p>
+            <p class="figure live-fig"><b id="hero-bpm">--</b><small>bpm</small><span class="delta" id="hero-delta">Baseline not set yet</span></p>
+            <div class="quality small" aria-label="Heart signal quality">
+              <span class="mono">Heart signal</span>
+              <div class="qbars" id="hero-q" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></div>
+              <b id="hero-q-text" class="mono">--</b>
+              <span class="mono pass">Pass line 0.50</span>
+            </div>
+          </div>
+
+          <dl class="readouts" aria-label="Against your baseline">
             <div class="readout" id="r-heart">
               <dt><svg class="ic"><use href="#i-heart"/></svg>Heart</dt>
-              <dd><b data-now>--</b><span data-base>baseline --</span><em class="flag" data-flag>–</em></dd>
+              <dd><b data-now>--</b><span data-base>Baseline --</span><em class="flag" data-flag>–</em></dd>
               <div class="track" aria-hidden="true"><i class="base"></i><i class="now"></i></div>
             </div>
             <div class="readout" id="r-breath">
               <dt><svg class="ic"><use href="#i-lungs"/></svg>Breathing</dt>
-              <dd><b data-now>--</b><span data-base>baseline --</span><em class="flag" data-flag>–</em></dd>
+              <dd><b data-now>--</b><span data-base>Baseline --</span><em class="flag" data-flag>–</em></dd>
               <div class="track" aria-hidden="true"><i class="base"></i><i class="now"></i></div>
             </div>
             <div class="readout" id="r-blink">
               <dt><svg class="ic"><use href="#i-eye"/></svg>Blinks</dt>
-              <dd><b data-now>--</b><span data-base>baseline --</span><em class="flag" data-flag>–</em></dd>
+              <dd><b data-now>--</b><span data-base>Baseline --</span><em class="flag" data-flag>–</em></dd>
               <div class="track" aria-hidden="true"><i class="base"></i><i class="now"></i></div>
             </div>
           </dl>
@@ -235,205 +263,100 @@
         <!-- Breathing tide: the real measured breathing wave, last 30 s -->
         <div class="tide" aria-hidden="true">
           <svg viewBox="0 0 1200 60" preserveAspectRatio="none"><path id="tide-path" d=""/></svg>
-          <span class="tide-label mono" id="tide-label">breathing · last 30 s</span>
-        </div>
-        <a class="scroll-cue mono" href="#sec-heart">details ↓</a>
-      </section>
-
-      <!-- Heart rate -->
-      <section class="metric-sec" id="sec-heart" aria-labelledby="sec-heart-title">
-        <header class="metric-head">
-          <div class="metric-id"><span class="metric-n mono">01</span><div><p class="kicker">From skin colour · rPPG</p><h2 id="sec-heart-title" class="headline sm">Heart rate</h2></div></div>
-          <p class="figure md"><b id="sec-hr-v">--</b><small>bpm</small></p>
-          <dl class="facts">
-            <div><dt>baseline</dt><dd id="sec-hr-base">--</dd></div>
-            <div><dt>signal</dt><dd id="sec-hr-q">--</dd></div>
-            <div><dt>2-min average</dt><dd id="hs-avg">--</dd></div>
-          </dl>
-          <button class="btn btn-ghost toggle" type="button" aria-expanded="false" aria-controls="panel-heart">Show graph</button>
-        </header>
-        <div class="metric-panel" id="panel-heart" hidden>
-          <figure class="plot">
-            <figcaption><span>This session</span><span class="meta">one reading per second · dashed line is your baseline · shaded is elevated</span></figcaption>
-            <div class="chart-wrap"><svg class="chart" data-trend="heart_rate" role="img" aria-label="Heart rate over this session"></svg><div class="tip-box" hidden></div></div>
-          </figure>
-          <div class="plot-row">
-            <figure class="plot">
-              <figcaption><span>Pulse wave</span><span class="meta">measured · last 6 s</span></figcaption>
-              <svg class="wave" viewBox="0 0 600 80" preserveAspectRatio="none" aria-hidden="true"><g class="wave-grid"></g><polyline id="pulse-spark" points=""/></svg>
-            </figure>
-            <figure class="plot">
-              <figcaption><span>2-minute average</span><span class="meta" id="avg-span"></span></figcaption>
-              <p class="figure sm"><b id="avg-v">--</b><small>bpm</small></p>
-              <div class="progress"><i id="avg-bar"></i></div>
-              <p class="meta" id="avg-sub">Waiting for heart rate</p>
-            </figure>
-          </div>
+          <span class="tide-label mono" id="tide-label">Breathing · last 30 s</span>
         </div>
       </section>
-
-      <!-- Breathing -->
-      <section class="metric-sec" id="sec-breath" aria-labelledby="sec-breath-title">
-        <header class="metric-head">
-          <div class="metric-id"><span class="metric-n mono">02</span><div><p class="kicker" id="sec-br-src">From chest motion</p><h2 id="sec-breath-title" class="headline sm">Breathing</h2></div></div>
-          <p class="figure md"><b id="sec-br-v">--</b><small>/min</small></p>
-          <dl class="facts">
-            <div><dt>baseline</dt><dd id="sec-br-base">--</dd></div>
-            <div><dt>needs</dt><dd>≈ 20 s</dd></div>
-          </dl>
-          <button class="btn btn-ghost toggle" type="button" aria-expanded="false" aria-controls="panel-breath">Show graph</button>
-        </header>
-        <div class="metric-panel" id="panel-breath" hidden>
-          <figure class="plot">
-            <figcaption><span>This session</span><span class="meta">one reading per second · dashed line is your baseline · shaded is elevated</span></figcaption>
-            <div class="chart-wrap"><svg class="chart" data-trend="breathing_rate" role="img" aria-label="Breathing rate over this session"></svg><div class="tip-box" hidden></div></div>
-          </figure>
-          <figure class="plot">
-            <figcaption><span>Breathing wave</span><span class="meta">measured · last 30 s</span></figcaption>
-            <svg class="wave breath" viewBox="0 0 600 70" preserveAspectRatio="none" aria-hidden="true"><polyline id="breath-spark" points=""/></svg>
-          </figure>
-        </div>
-      </section>
-
-      <!-- Blinks -->
-      <section class="metric-sec" id="sec-blink" aria-labelledby="sec-blink-title">
-        <header class="metric-head">
-          <div class="metric-id"><span class="metric-n mono">03</span><div><p class="kicker">From eye landmarks</p><h2 id="sec-blink-title" class="headline sm">Blinks</h2></div></div>
-          <p class="figure md"><b id="sec-bl-v">--</b><small>/min</small></p>
-          <dl class="facts">
-            <div><dt>baseline</dt><dd id="sec-bl-base">--</dd></div>
-            <div><dt>counted over</dt><dd>60 s</dd></div>
-          </dl>
-          <button class="btn btn-ghost toggle" type="button" aria-expanded="false" aria-controls="panel-blink">Show graph</button>
-        </header>
-        <div class="metric-panel" id="panel-blink" hidden>
-          <figure class="plot">
-            <figcaption><span>This session</span><span class="meta">one reading per second · dashed line is your baseline · shaded is elevated</span></figcaption>
-            <div class="chart-wrap"><svg class="chart" data-trend="blink_rate" role="img" aria-label="Blink rate over this session"></svg><div class="tip-box" hidden></div></div>
-          </figure>
-        </div>
-      </section>
-
-      <p class="footer-note mono" id="fps"></p>
-    </main>
-
-    <!-- ---------- LIVE · C Living Instrument (one object at the centre) ---------- -->
-    <main id="view-live-c" class="view view-c" role="tabpanel" aria-labelledby="tab-live" hidden>
-      <div class="c-stage">
-        <div class="c-head">
-          <div class="thumb-slot" id="thumb-slot-c"></div>
-          <p class="kicker">Composure</p>
-          <p class="c-statement" id="c2-statement" aria-live="polite"><span id="c2-state" class="state" data-state="calibrating">calibrating</span><span id="c2-note">Learning your baseline.</span></p>
-          <span class="c-basis" id="c2-basis"></span>
-          <button id="btn-breathe-c" class="btn btn-ghost breathe-btn" type="button"><svg class="ic"><use href="#i-wind"/></svg>Breathe with me · 1 min</button>
-        </div>
-
-        <figure class="dial-wrap" id="dial" data-state="none" data-composure="calibrating">
-          <div class="aura" aria-hidden="true"><i class="aura-calm"></i><i class="aura-elev"></i></div>
-          <svg class="dial" viewBox="0 0 400 400" role="img" aria-labelledby="dial-title dial-desc">
-            <title id="dial-title">Cardiac dial</title>
-            <desc id="dial-desc">Waiting for a heart rate.</desc>
-            <g id="sess-ring" class="sess"></g>
-            <g id="rate-scale" class="scale"></g>
-            <path id="zone-elev" class="zone" d=""/>
-            <line id="zone-start" class="zone-start" visibility="hidden"/>
-            
-            <g id="base-mark" class="base-mark" visibility="hidden"><path d="M0 -6 L5 4 L-5 4 Z"/></g>
-            <g class="trace-g">
-              <circle class="trace-base" cx="200" cy="200" r="128"/>
-              <path id="trace-a" class="trace on" d=""/>
-              <path id="trace-b" class="trace" d=""/>
-            </g>
-            <g id="needle" class="needle"><line x1="200" y1="62" x2="200" y2="30"/><circle cx="200" cy="27" r="5"/></g>
-            <text id="range-note" class="range-note" x="200" y="312" text-anchor="middle"></text>
-          </svg>
-          <div class="dial-heart heart-stage" data-heart id="c-heart"></div>
-          <figcaption class="dial-caption mono" id="dial-caption">Waiting for a heart rate.</figcaption>
-          <p class="dial-alert" id="dial-alert" role="status" hidden></p>
-        </figure>
-
-        <div class="c-readouts">
-          <button class="ro ro-hr" type="button" data-metric="heart_rate" aria-controls="drawer" aria-expanded="false">
-            <span class="ro-k"><svg class="ic"><use href="#i-heart"/></svg>Heart rate</span>
-            <span class="ro-v"><b id="c2-hr">--</b><small>bpm</small></span>
-            <span class="ro-d" id="c2-hr-d">baseline after calibration</span>
-            <span class="ro-s" id="c2-hr-s">waiting</span>
-            <span class="ro-q"><span class="qbars" id="c2-q" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></span><span id="c2-q-text">signal --</span></span>
-            <svg class="ro-go ic" aria-hidden="true"><use href="#i-chev"/></svg>
-          </button>
-          <button class="ro ro-br" type="button" data-metric="breathing_rate" aria-controls="drawer" aria-expanded="false">
-            <span class="ro-k"><svg class="ic"><use href="#i-lungs"/></svg>Breathing</span>
-            <span class="ro-v"><b id="c2-br">--</b><small>/min</small></span>
-            <span class="ro-d" id="c2-br-d">baseline after calibration</span>
-            <span class="ro-s" id="c2-br-s">waiting</span>
-            <svg class="ro-go ic" aria-hidden="true"><use href="#i-chev"/></svg>
-          </button>
-          <button class="ro ro-bl" type="button" data-metric="blink_rate" aria-controls="drawer" aria-expanded="false">
-            <span class="ro-k"><svg class="ic"><use href="#i-eye"/></svg>Blinks</span>
-            <span class="ro-v"><b id="c2-bl">--</b><small>/min</small></span>
-            <span class="ro-d" id="c2-bl-d">baseline after calibration</span>
-            <span class="ro-s" id="c2-bl-s">waiting</span>
-            <svg class="ro-go ic" aria-hidden="true"><use href="#i-chev"/></svg>
-          </button>
-        </div>
-
-        <div class="c-horizon" aria-hidden="true">
-          <svg viewBox="0 0 1200 56" preserveAspectRatio="none"><path id="tide-c" d=""/></svg>
-          <span class="mono" id="tide-c-label">breathing · measured · last 30 s</span>
-        </div>
-        <p class="c-legend mono" id="fps-c"></p>
+      <div class="live-foot">
+        <p class="footer-note mono" id="fps"></p>
+        <button id="btn-to-summary" class="btn btn-ghost btn-sm" type="button">Open Session Report<svg class="ic"><use href="#i-arrow"/></svg></button>
       </div>
-
-      <!-- Detail drawer: opened from a readout -->
-      <aside id="drawer" class="drawer" role="dialog" aria-modal="true" aria-labelledby="drawer-title" hidden>
-        <header class="drawer-head">
-          <div><p class="kicker" id="drawer-kicker">Measured</p><h2 class="headline sm" id="drawer-title">Heart rate</h2></div>
-          <button id="drawer-close" class="icon-btn" type="button" aria-label="Close details"><svg class="ic"><use href="#i-close"/></svg></button>
-        </header>
-        <p class="figure md"><b id="drawer-v">--</b><small id="drawer-u">bpm</small></p>
-        <p class="drawer-explain" id="drawer-explain"></p>
-        <figure class="plot">
-          <figcaption><span>This session</span><span class="meta">per second · dashed baseline · shaded elevated</span></figcaption>
-          <div class="chart-wrap"><svg class="chart" id="drawer-chart" data-trend="heart_rate" role="img" aria-label="Session chart"></svg><div class="tip-box" hidden></div></div>
-        </figure>
-        <figure class="plot" id="drawer-wave-fig">
-          <figcaption><span id="drawer-wave-title">Pulse wave</span><span class="meta" id="drawer-wave-meta">measured · last 6 s</span></figcaption>
-          <svg class="wave" viewBox="0 0 600 80" preserveAspectRatio="none" aria-hidden="true"><polyline id="drawer-wave" points=""/></svg>
-        </figure>
-      </aside>
     </main>
 
-    <!-- ---------- SUMMARY ---------- -->
+    <!-- ---------- SUMMARY: session report ---------- -->
     <main id="view-summary" class="view view-summary" role="tabpanel" aria-labelledby="tab-summary" hidden>
-      <header class="sum-head">
-        <div><p class="kicker" id="sum-when">Session summary</p><h1 class="headline md" id="sum-title">Your session</h1></div>
+      <header class="rep-head">
+        <div>
+          <p class="kicker" id="sum-when">Session report</p>
+          <h1 class="rep-title" id="sum-title">Your session</h1>
+        </div>
         <div class="sum-actions">
-          <button id="btn-new" class="btn btn-primary" type="button">Start new session</button>
-          <button id="btn-back" class="btn btn-ghost" type="button">Back to live</button>
+          <button id="btn-back" class="btn btn-ghost" type="button">Back to Live</button>
+          <div class="dl-wrap" id="dl-wrap" hidden>
+            <button id="btn-dl" class="btn btn-solid" type="button" aria-expanded="false" aria-controls="dl-menu"><svg class="ic"><use href="#i-down"/></svg>Download Report</button>
+            <div id="dl-menu" class="dl-menu" role="menu" hidden>
+              <button type="button" role="menuitem" data-dl="pdf"><b>PDF</b><span>Formatted report with charts</span></button>
+              <button type="button" role="menuitem" data-dl="csv"><b>CSV</b><span>One row per second, for spreadsheets</span></button>
+              <button type="button" role="menuitem" data-dl="png"><b>PNG</b><span>Image of the report's first page</span></button>
+            </div>
+          </div>
+          <button id="btn-new" class="btn btn-primary" type="button">Start New Session</button>
         </div>
       </header>
+      <p id="dl-status" class="dl-status mono" role="status"></p>
 
-      <section class="sum-lead">
-        <p class="figure xl"><b id="sum-calm">--</b><small>% of the time within your baseline</small></p>
-        <div class="timeline" id="sum-timeline" role="img" aria-label="Composure over the session: calm, elevated, or not yet judged"></div>
-        <div class="legend mono"><span><i class="lg calm"></i>calm</span><span><i class="lg elev"></i>elevated</span><span><i class="lg none"></i>calibrating / no reading</span></div>
-      </section>
+      <p id="rep-quick" class="rep-quick" hidden></p>
 
-      <section class="sum-grid">
-        <div class="sum-cell"><p class="kicker">Duration</p><p class="figure sm"><b id="sum-dur">--</b></p><p class="meta" id="sum-dur-sub"></p></div>
-        <div class="sum-cell"><p class="kicker">Elevated moments</p><p class="figure sm"><b id="sum-episodes">--</b></p><p class="meta">times composure switched to elevated</p></div>
-        <div class="sum-cell"><p class="kicker">Breathing exercises</p><p class="figure sm"><b id="sum-ex">0</b></p><p class="meta">guided minutes completed</p></div>
-        <div class="sum-cell sum-metric" data-sum="heart_rate"><p class="kicker">Heart rate</p><p class="figure sm"><b data-mean>--</b><small>bpm avg</small></p><p class="meta" data-range></p></div>
-        <div class="sum-cell sum-metric" data-sum="breathing_rate"><p class="kicker">Breathing</p><p class="figure sm"><b data-mean>--</b><small>/min avg</small></p><p class="meta" data-range></p></div>
-        <div class="sum-cell sum-metric" data-sum="blink_rate"><p class="kicker">Blinks</p><p class="figure sm"><b data-mean>--</b><small>/min avg</small></p><p class="meta" data-range></p></div>
-      </section>
+      <!-- the six numbers that matter: the first thing the report shows -->
+      <dl class="rep-overview" id="rep-overview" aria-label="Session at a glance">
+        <div class="ov ov-dur"><dt>Duration</dt><dd><b id="ov-dur">--</b></dd><p class="ov-st" id="ov-dur-st"></p><p class="ov-sub" id="ov-dur-sub">--</p></div>
+        <div class="ov ov-heart"><dt><svg class="ic"><use href="#i-heart"/></svg>Heart rate</dt><dd><b id="ov-hr">--</b><small>bpm avg</small></dd><p class="ov-st" id="ov-hr-st"></p><p class="ov-sub" id="ov-hr-sub">--</p></div>
+        <div class="ov ov-breath"><dt><svg class="ic"><use href="#i-lungs"/></svg>Breathing</dt><dd><b id="ov-br">--</b><small>/min avg</small></dd><p class="ov-st" id="ov-br-st"></p><p class="ov-sub" id="ov-br-sub">--</p></div>
+        <div class="ov ov-blink"><dt><svg class="ic"><use href="#i-eye"/></svg>Blinks</dt><dd><b id="ov-bl">--</b><small>/min</small></dd><p class="ov-st" id="ov-bl-st"></p><p class="ov-sub" id="ov-bl-sub">--</p></div>
+        <div class="ov ov-q"><dt>Heart signal</dt><dd><b id="ov-q">--</b><small>reliable</small></dd><p class="ov-st" id="ov-q-st"></p><p class="ov-sub" id="ov-q-sub">--</p></div>
+        <div class="ov ov-c"><dt>Composure</dt><dd><b id="ov-c">--</b><small id="ov-c-u"></small></dd><p class="ov-st" id="ov-c-st"></p><p class="ov-sub" id="ov-c-sub">--</p></div>
+      </dl>
 
-      <section class="sum-moments">
-        <p class="kicker">Moments</p>
-        <ol id="sum-events" class="moments"></ol>
-        <p id="sum-events-empty" class="empty">No elevated moments or exercises this session.</p>
-      </section>
-      <p class="fine center">Averages use only seconds with a real reading. CUORE is not a medical device.</p>
+      <div class="rep-body">
+        <div class="rep-charts">
+          <figure class="plot" data-plot="heart_rate">
+            <figcaption><span class="plot-t"><svg class="ic c-heart"><use href="#i-heart"/></svg>Heart rate</span><span class="meta">Solid = reliable · dotted = provisional (weak signal) · dashed line = your baseline · shaded = elevated</span></figcaption>
+            <div class="chart-wrap"><svg class="chart" data-trend="heart_rate" role="img" aria-label="Heart rate over this session"></svg><div class="tip-box" hidden></div></div>
+            <p class="plot-stats mono" data-stats="heart_rate"></p>
+          </figure>
+          <figure class="plot" data-plot="breathing_rate">
+            <figcaption><span class="plot-t"><svg class="ic c-breath"><use href="#i-lungs"/></svg>Breathing</span><span class="meta">Each reading averages the previous 30 s · gaps = no reading</span></figcaption>
+            <div class="chart-wrap"><svg class="chart" data-trend="breathing_rate" role="img" aria-label="Breathing rate over this session"></svg><div class="tip-box" hidden></div></div>
+            <p class="plot-stats mono" data-stats="breathing_rate"></p>
+          </figure>
+          <figure class="plot" data-plot="blink_rate">
+            <figcaption><span class="plot-t"><svg class="ic c-blink"><use href="#i-eye"/></svg>Blinks</span><span class="meta">Solid = counted over a full 60 s · dotted = counted over less (provisional)</span></figcaption>
+            <div class="chart-wrap"><svg class="chart" data-trend="blink_rate" role="img" aria-label="Blink rate over this session"></svg><div class="tip-box" hidden></div></div>
+            <p class="plot-stats mono" data-stats="blink_rate"></p>
+          </figure>
+          <figure class="plot" data-plot="quality">
+            <figcaption><span class="plot-t">Heart signal quality</span><span class="meta">0 to 1 · heart rate counts as reliable above the 0.50 pass line</span></figcaption>
+            <div class="chart-wrap"><svg class="chart short" data-trend="quality" role="img" aria-label="Heart signal quality over this session"></svg><div class="tip-box" hidden></div></div>
+          </figure>
+        </div>
+
+        <aside class="rep-side">
+          <section class="rep-block">
+            <h2 class="rep-h">What this session shows</h2>
+            <ul class="findings" id="findings"></ul>
+          </section>
+
+          <section class="rep-block">
+            <h2 class="rep-h">Data availability</h2>
+            <div class="avail" id="avail"></div>
+            <div class="legend mono"><span><i class="lg rel"></i>Reliable</span><span><i class="lg prov"></i>Provisional</span><span><i class="lg none"></i>No reading</span></div>
+          </section>
+
+          <section class="rep-block">
+            <h2 class="rep-h">Composure</h2>
+            <p class="rep-big"><b id="sum-calm">--</b><span id="sum-calm-u">% of judged time within baseline</span></p>
+            <div class="timeline" id="sum-timeline" role="img" aria-label="Composure over the session: calm, elevated, or not judged"></div>
+            <div class="legend mono"><span><i class="lg calm"></i>Calm</span><span><i class="lg elev"></i>Elevated</span><span><i class="lg none"></i>Not judged</span></div>
+            <dl class="baselines" id="baselines"></dl>
+          </section>
+
+          <section class="rep-block">
+            <h2 class="rep-h">Moments</h2>
+            <ol id="sum-events" class="moments"></ol>
+            <p id="sum-events-empty" class="empty">No elevated moments or exercises this session.</p>
+          </section>
+        </aside>
+      </div>
+      <p class="fine center">Averages use only seconds with a real reading; heart-rate averages use reliable seconds only. CUORE is not a medical device.</p>
     </main>
   </section>
 
@@ -450,19 +373,13 @@
       <button id="btn-breathe-close" class="icon-btn" type="button" aria-label="Stop and close"><svg class="ic"><use href="#i-close"/></svg></button>
     </div>
     <div class="breathe-main">
-      <div class="bl"><span class="bl-k"><svg class="ic"><use href="#i-heart"/></svg>Heart rate</span><b><span id="br-hr">--</span><small>bpm</small></b><em id="br-hr-start">at start --</em></div>
+      <div class="bl"><span class="bl-k"><svg class="ic"><use href="#i-heart"/></svg>Heart rate</span><b><span id="br-hr">--</span><small>bpm</small></b><em id="br-hr-start">At start --</em></div>
       <div class="orb-wrap" aria-live="polite">
         <div class="orb-rings" aria-hidden="true"><i></i><i></i><i></i></div>
-        <canvas id="breath-canvas" class="breath-canvas" aria-hidden="true"></canvas>
-        <svg class="guide-ring" viewBox="0 0 200 200" aria-hidden="true">
-          <circle class="guide-track" cx="100" cy="100" r="96"/>
-          <circle id="guide-arc" class="guide-arc" cx="100" cy="100" r="96"/>
-        </svg>
         <div class="orb" id="orb"></div>
         <div class="orb-label"><p class="orb-text" id="orb-text">Get comfortable</p><p class="orb-count mono" id="orb-count">1:00</p></div>
-        <p class="guide-label mono">guide · 6 breaths/min · prescribed</p>
       </div>
-      <div class="bl"><span class="bl-k"><svg class="ic"><use href="#i-lungs"/></svg>Your breathing · measured</span><b><span id="br-br">--</span><small>/min</small></b><em id="br-br-start">at start --</em>
+      <div class="bl"><span class="bl-k"><svg class="ic"><use href="#i-lungs"/></svg>Your breathing · measured</span><b><span id="br-br">--</span><small>/min</small></b><em id="br-br-start">At start --</em>
         <svg class="bl-wave" viewBox="0 0 300 40" preserveAspectRatio="none" aria-hidden="true"><polyline id="br-wave" points=""/></svg>
       </div>
     </div>
@@ -476,7 +393,7 @@
         <div class="cmp-row"><span><svg class="ic"><use href="#i-lungs"/></svg>Breathing</span><b id="res-br">--</b><em id="res-br-d"></em></div>
       </div>
       <p class="fine">Start is the reading when you began. End is the average of every reading in the last 15 s. Breathing rate is averaged over 30 s, so it trails a little. Not medical advice.</p>
-      <div class="cta center"><button id="btn-breathe-done" class="btn btn-primary" type="button">Back to live</button><button id="btn-breathe-again" class="btn btn-ghost" type="button">Another minute</button></div>
+      <div class="cta center"><button id="btn-breathe-done" class="btn btn-primary" type="button">Back to Live</button><button id="btn-breathe-again" class="btn btn-ghost" type="button">Another Minute</button></div>
     </div>
   </div>
 
@@ -486,7 +403,7 @@
     <b id="notice-title">You've drifted from your usual rhythm</b>
     <ul id="notice-reasons"></ul>
     <div class="notice-actions">
-      <button id="notice-breathe" class="btn btn-primary btn-sm" type="button">Breathe for a minute</button>
+      <button id="notice-breathe" class="btn btn-primary btn-sm" type="button">Breathe for a Minute</button>
       <button id="notice-close" class="btn btn-ghost btn-sm" type="button">Dismiss</button>
     </div>
   </div>

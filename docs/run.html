@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; script-src 'self'; style-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <meta name="referrer" content="strict-origin-when-cross-origin">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light">
+  <meta name="description" content="How to run CUORE on your own computer, and measure from your phone over home Wi-Fi.">
+  <title>Run CUORE · on your own computer</title>
+  <link rel="icon" href="/static/icon-192.png">
+  <link rel="stylesheet" href="/static/home.css">
+  <script src="/static/home.js" defer></script>
+</head>
+<body class="page-run">
+  <a class="skip" href="#main">Skip to content</a>
+
+  <svg class="defs" aria-hidden="true" focusable="false">
+    <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M5 12h14m-5-5 5 5-5 5"/></symbol>
+    <symbol id="i-lock" viewBox="0 0 24 24"><rect x="5" y="10.5" width="14" height="10" rx="2"/><path d="M8 10.5V8a4 4 0 0 1 8 0v2.5"/></symbol>
+    <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></symbol>
+  </svg>
+
+  <header class="nav" id="nav">
+    <div class="nav-in wrap">
+      <a class="brand" href="/" aria-label="CUORE home"><img class="logo" src="/static/logo.png" alt="CUORE"></a>
+      <nav class="nav-links" aria-label="Sections">
+        <a href="/#product">Product</a>
+        <a href="/#how">How It Works</a>
+        <a href="/#science">Science</a>
+        <a href="/#privacy">Privacy</a>
+      </nav>
+      <details class="menu">
+        <summary aria-label="Menu"><svg class="ic"><use href="#i-menu"/></svg></summary>
+        <div class="menu-sheet">
+          <a href="/#product">Product</a><a href="/#how">How It Works</a><a href="/#science">Science</a><a href="/#privacy">Privacy</a>
+        </div>
+      </details>
+    </div>
+  </header>
+
+  <main id="main">
+    <section class="sec run-hero">
+      <div class="wrap">
+        <p class="eyebrow">Run CUORE</p>
+        <h1 class="h2">CUORE runs on your computer, so your video stays there.</h1>
+        <p class="sec-sub">This website explains CUORE. The measuring app is a small program you run yourself: the camera, the analysis and every reading stay on your machine. Setup takes about ten minutes.</p>
+      </div>
+    </section>
+
+    <section class="sec" aria-labelledby="need-title">
+      <div class="wrap run-grid">
+        <div>
+          <p class="eyebrow"><span class="n">01</span>What you need</p>
+          <h2 id="need-title" class="h3">Before you start</h2>
+        </div>
+        <ul class="run-list">
+          <li>A computer with a webcam: macOS, Windows or Linux.</li>
+          <li>Python 3.12, and about 2 GB of free disk space for the analysis libraries.</li>
+          <li>A current browser: Chrome, Edge, Safari or Firefox.</li>
+          <li>Steady light in front of you. A bright window behind you makes the heart signal weak.</li>
+        </ul>
+      </div>
+    </section>
+
+    <section class="sec" aria-labelledby="steps-title">
+      <div class="wrap run-grid">
+        <div>
+          <p class="eyebrow"><span class="n">02</span>Install and start</p>
+          <h2 id="steps-title" class="h3">On your computer</h2>
+        </div>
+        <ol class="steps-run">
+          <li>
+            <b>Download CUORE</b>
+            <pre class="code"><code>git clone -b web-ui https://github.com/LeoSLayer1-Arif/cuore.git
+cd cuore</code></pre>
+          </li>
+          <li>
+            <b>Create a private Python environment and install</b>
+            <pre class="code"><code>python3.12 -m venv venv
+venv/bin/pip install -r requirements.txt</code></pre>
+            <span class="note">On Windows use <code>venv\Scripts\pip</code> and <code>venv\Scripts\python</code>.</span>
+          </li>
+          <li>
+            <b>Start the server</b>
+            <pre class="code"><code>venv/bin/python server.py</code></pre>
+            <span class="note">The first start downloads MediaPipe's face-landmark model (a few MB) from Google's public model storage. That is a file download only; nothing about you is sent. It can take a minute.</span>
+          </li>
+          <li>
+            <b>Open CUORE</b>
+            <pre class="code"><code>http://127.0.0.1:5001/app</code></pre>
+            <span class="note">Allow the camera when your browser asks, choose a session length, and sit still.</span>
+          </li>
+        </ol>
+      </div>
+    </section>
+
+    <section class="sec sec-alt" aria-labelledby="phone-title">
+      <div class="wrap run-grid">
+        <div>
+          <p class="eyebrow"><span class="n">03</span>From your phone</p>
+          <h2 id="phone-title" class="h3">Home Wi-Fi mode</h2>
+          <p class="run-aside">Your phone's video goes to your own computer over your Wi-Fi, is processed in memory there, and is not sent anywhere else.</p>
+        </div>
+        <ol class="steps-run">
+          <li>
+            <b>Start the server in home Wi-Fi mode</b>
+            <pre class="code"><code>venv/bin/python server.py --lan</code></pre>
+            <span class="note">It prints an https address and an 8-character pairing code.</span>
+          </li>
+          <li>
+            <b>Open the address on your phone</b>
+            <span class="note">The phone and computer must be on the same network. A phone hotspot works when public Wi-Fi blocks devices from seeing each other. The browser warns that the certificate isn't trusted: it was made on your computer for that address. Safari: Show Details › visit this website. Chrome: Advanced › Proceed.</span>
+          </li>
+          <li>
+            <b>Enter the pairing code</b>
+            <span class="note">Only paired devices can send frames or see readings. Restarting the server issues a new code.</span>
+          </li>
+        </ol>
+      </div>
+    </section>
+
+    <section class="sec" aria-labelledby="help-title">
+      <div class="wrap run-grid">
+        <div>
+          <p class="eyebrow"><span class="n">04</span>If something's off</p>
+          <h2 id="help-title" class="h3">Common fixes</h2>
+        </div>
+        <dl class="run-help">
+          <div><dt>Port 5000 doesn't work on a Mac</dt><dd>macOS uses it for AirPlay. CUORE uses 5001; another port works with <code>--port 5002</code>.</dd></div>
+          <div><dt>“Camera access is blocked”</dt><dd>Allow the camera for the page in your browser's site settings, then try again.</dd></div>
+          <div><dt>Heart signal stays weak</dt><dd>Face a lamp or window, hold still and keep your whole face in view. Breathing and blinks keep measuring meanwhile.</dd></div>
+          <div><dt>The phone can't open the address</dt><dd>Check both are on the same network, allow incoming connections for Python if your computer asks, or use a phone hotspot.</dd></div>
+        </dl>
+      </div>
+    </section>
+
+    <section class="close" aria-labelledby="close-title">
+      <div class="wrap close-in">
+        <p class="eyebrow">For awareness, not diagnosis</p>
+        <h2 id="close-title" class="h-close">Sit still.<br>Meet your baseline.</h2>
+        <a class="btn btn-invert btn-lg" href="/">Back to the Overview<svg class="ic"><use href="#i-arrow"/></svg></a>
+        <p class="close-note mono">CUORE is not a medical device</p>
+      </div>
+    </section>
+  </main>
+
+  <footer class="foot">
+    <p class="wrap foot-fine">For awareness, not diagnosis. CUORE is not a medical device.</p>
+  </footer>
+</body>
+</html>

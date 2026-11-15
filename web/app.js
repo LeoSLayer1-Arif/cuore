@@ -45,8 +45,7 @@ const mmss = (sec) => {
 const app = {
   screen: "start",
   view: "live",
-  style: "nocturne",
-  mode: "dark",          // C only: "dark" (Night lab) or "light" (Mineral)
+  quick: false,          // 45-second quick read (experimental)
   reduceMotion: window.matchMedia("(prefers-reduced-motion: reduce)").matches,
   source: null,          // "browser" or "webcam", from the server
   sessionId: null,
@@ -59,49 +58,21 @@ const app = {
   lastFrameOk: 0,
   frameErrors: 0,
   tick: 0,
-  history: [],           // one sample per poll: {t, hr, br, blink, state}
+  history: [],           // one sample per poll; see historySample()
   events: [],            // elevated moments: {t, reasons}
   exercises: [],         // breathing results: {t, hr, br}
   last: null,            // latest readings for this session
 };
 
-// ================================================================ style + art
+// ================================================================ art
 
-let thumbHome = null;   // where the camera thumbnail lives in A/B
-
-function applyStyle(name) {
-  app.style = name;
-  const living = name === "living";
-  document.body.classList.toggle("style-nocturne", name === "nocturne");
-  document.body.classList.toggle("style-instrument", name === "instrument");
-  document.body.classList.toggle("style-living", living);
-  document.body.classList.toggle("mode-dark", living && app.mode === "dark");
-  document.body.classList.toggle("mode-light", living && app.mode === "light");
-  for (const b of document.querySelectorAll(".style-btn")) b.setAttribute("aria-checked", String(b.dataset.style === name));
-  $("mode-btn").hidden = !living;
-  $("mode-btn").setAttribute("aria-label", app.mode === "dark" ? "Switch to light mode" : "Switch to dark mode");
-  // one camera thumbnail, moved between layouts (the video keeps streaming)
-  const thumb = $("thumb");
-  if (!thumbHome) thumbHome = { parent: thumb.parentElement, next: thumb.nextElementSibling };
-  if (living) $("thumb-slot-c").appendChild(thumb);
-  else thumbHome.parent.insertBefore(thumb, thumbHome.next);
-  mountHearts();
-  if (app.screen === "app") showView(app.view);
-}
-
-function heartIsPhoto() {
-  return app.style === "nocturne" || (app.style === "living" && app.mode === "dark");
-}
-
-// Dark looks use the blue 3D render (edges fade into the page); light looks use the engraving.
+// The engraving heart, shared by the start page and the live instrument.
 function mountHearts() {
-  const photo = heartIsPhoto();
-  const src = photo ? "/static/heart-dark.png" : "/static/heart.png";
   for (const stage of document.querySelectorAll("[data-heart]")) {
     const img = document.createElement("img");
-    img.className = "heart-art " + (photo ? "photo" : "sketch");
+    img.className = "heart-art";
     img.alt = "";
-    img.src = src;
+    img.src = "/static/heart.png";
     img.addEventListener("error", () => img.remove());
     stage.replaceChildren(img);
   }
@@ -122,18 +93,14 @@ function showScreen(name) {
 
 function showView(name, focus) {
   app.view = name;
-  const living = app.style === "living";
-  $("view-live").hidden = !(name === "live" && !living);
-  $("view-live-c").hidden = !(name === "live" && living);
+  $("view-live").hidden = name !== "live";
   $("view-summary").hidden = name !== "summary";
-  if (name !== "live") closeDrawer();
   for (const tab of document.querySelectorAll(".tab")) {
     const on = tab.dataset.view === name;
     tab.setAttribute("aria-selected", String(on));
     tab.tabIndex = on ? 0 : -1;
     if (on && focus) tab.focus();
   }
-  if (name === "live") renderCharts();
   if (name === "summary") renderSummary();
   window.scrollTo(0, 0);
 }
@@ -172,16 +139,23 @@ function trapFocus(el, onEscape) {
 
 async function serverSource() {
   const r = await fetch("/api/readings", { cache: "no-store" });
+  if (r.status === 401) { showPairForm(true); throw new Error("This device isn't paired yet. Enter the pairing code shown in the CUORE terminal."); }
   if (!r.ok) throw new Error(`The CUORE server answered ${r.status}.`);
   return (await r.json()).session.source;
 }
 
 async function openCamera() {
   app.stream = await navigator.mediaDevices.getUserMedia({
-    video: { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } },
+    // front camera on phones; resolution and frame rate requests are unchanged from desktop
+    video: { facingMode: "user", width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } },
     audio: false,
   });
-  for (const track of app.stream.getVideoTracks()) track.addEventListener("ended", cameraLost);
+  for (const track of app.stream.getVideoTracks()) {
+    track.addEventListener("ended", cameraLost);
+    // iOS and Android mute the track during interruptions (a call, Control Centre, another app)
+    track.addEventListener("mute", () => pauseForBackground("The camera was interrupted. Readings are paused."));
+    track.addEventListener("unmute", resumeFromBackground);
+  }
   for (const id of ["cal-video", "thumb-video"]) {
     const v = $(id);
     v.srcObject = app.stream;
@@ -223,13 +197,88 @@ async function reconnectCamera() {
   }
 }
 
+const PLATFORM = (() => {
+  const ua = navigator.userAgent;
+  const ios = /iPhone|iPad|iPod/.test(ua) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+  return { ios, android: /Android/.test(ua), mobile: ios || /Android|Mobi/.test(ua) };
+})();
+
 function cameraError(e) {
   switch (e && e.name) {
-    case "NotAllowedError": return "Camera access is blocked. Click the camera icon in the address bar, allow it, then try again.";
-    case "NotFoundError": return "No camera was found on this computer.";
+    case "NotAllowedError":
+      return PLATFORM.ios ? "Camera access is blocked. In Settings › Safari › Camera (or tap “aA” in the address bar › Website Settings), allow the camera, then try again."
+        : PLATFORM.android ? "Camera access is blocked. Tap the icon beside the address, open Permissions, allow Camera, then try again."
+        : "Camera access is blocked. Click the camera icon in the address bar, allow it, then try again.";
+    case "NotFoundError": case "OverconstrainedError": return "No suitable camera was found on this device.";
     case "NotReadableError": return "The camera is busy. Close other apps using it (Zoom, FaceTime, app.py) and try again.";
+    case "SecurityError": return insecureMessage();
     default: return e && e.message ? e.message : String(e);
   }
+}
+
+// Browsers only allow the camera on https:// pages or on this computer (127.0.0.1).
+function insecureMessage() {
+  return PLATFORM.mobile
+    ? "The camera can't open on this page: phones only allow it over https. On your computer, start CUORE with home Wi-Fi mode (server.py --lan) and open the https address it prints."
+    : "The camera only works on a secure page. Open CUORE at http://127.0.0.1:5001 on the computer running server.py.";
+}
+
+// ---------------------------------------------------------------- pairing (home Wi-Fi mode)
+// The code goes in a request body, never in a URL, so it never appears in server logs.
+function showPairForm(on) {
+  $("pair-form").hidden = !on;
+  $("btn-start").disabled = on;
+  if (on) $("pair-code").focus();
+}
+
+async function pairDevice(code) {
+  $("pair-error").hidden = true;
+  const r = await fetch("/api/pair", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Cuore-Client": "1" },
+    body: JSON.stringify({ code }),
+  }).catch(() => null);
+  const d = r ? await r.json().catch(() => ({})) : {};
+  if (!r || !r.ok) {
+    $("pair-error").textContent = d.error || (r ? `Pairing failed (${r.status}).` : "Can't reach the CUORE server.");
+    $("pair-error").hidden = false;
+    return false;
+  }
+  showPairForm(false);
+  return true;
+}
+
+// On load: in home Wi-Fi mode an unpaired device sees the pairing form; otherwise nothing changes.
+async function checkPairing() {
+  const r = await fetch("/api/readings", { cache: "no-store" }).catch(() => null);
+  showPairForm(!!r && r.status === 401);
+}
+
+// ---------------------------------------------------------------- background + interruptions
+// Switching apps or locking the phone stops the camera on mobile. Readings pause (the
+// gap is recorded as "no reading"), and frames resume when CUORE is back in front.
+let pausedForBackground = false;
+
+function pauseForBackground(msg) {
+  if (app.sessionEnded || !app.sessionStart || app.source !== "browser" || app.screen === "start") return;
+  pausedForBackground = true;
+  app.sending = false;
+  showBanner(msg || "Paused while CUORE was in the background.", false, "info");
+}
+
+async function resumeFromBackground() {
+  if (!pausedForBackground || app.sessionEnded) return;
+  pausedForBackground = false;
+  if (!app.stream) { showBanner(""); return; }              // no camera was open: nothing to resume
+  const track = app.stream.getVideoTracks()[0];
+  if (!track || track.readyState === "ended") { await reconnectCamera(); return; }   // the OS stopped it
+  if (track.muted) { pausedForBackground = true; return; }   // still interrupted; unmute will resume
+  const v = $("thumb-video");
+  if (v.paused) await v.play().catch(() => {});
+  if ($("cal-video").paused) await $("cal-video").play().catch(() => {});
+  app.sending = true;
+  pump();
+  showBanner("");
 }
 
 // Frames go to the server one at a time, each stamped with its capture time.
@@ -344,17 +393,41 @@ async function startSession() {
   app.exercises = [];
   app.last = null;
   calibrationDone = false;
-  lastCState = null;
   resetNotices();
   $("btn-back").hidden = false;
+  $("quick-bar").hidden = !app.quick;
+  $("screen-app").classList.remove("ended");
+  pausedForBackground = false;
+  $("btn-breathe").hidden = app.quick;   // a 1-minute exercise doesn't fit in 45 s
   if (app.source === "browser") { app.sending = true; pump(); }
 }
 
+// ---------------------------------------------------------------- 45-second quick read (experiment)
+// The clock starts with the camera (calibration included) and ends the session at
+// 45 s. Nothing about the measurements changes: no threshold is relaxed, so any
+// metric that needs a longer window is reported as provisional or unavailable.
+const QUICK_SEC = 45;
+const sessionSec = () => (app.sessionStart ? (Date.now() - app.sessionStart) / 1000 : 0);
+
+function updateQuick() {
+  if (!app.quick || app.sessionEnded) return;
+  const t = sessionSec(), left = Math.max(0, QUICK_SEC - t);
+  $("quick-left").textContent = mmss(left).replace(/^0/, "");
+  $("quick-fill").style.width = `${Math.min(100, (t / QUICK_SEC) * 100)}%`;
+  if (left <= 0) {
+    if (app.screen !== "app") showScreen("app");
+    endSession();
+  }
+}
+
 async function begin() {
+  const pick = document.querySelector('input[name="length"]:checked');
+  app.quick = !!pick && pick.value === "45";
   app.source = await serverSource();
   if (app.source === "browser") {
+    if (!window.isSecureContext) throw new Error(insecureMessage());
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-      throw new Error("This browser can't open the camera here. Use Chrome at http://127.0.0.1.");
+      throw new Error("This browser can't open the camera. Use a current version of Chrome, Edge, Safari or Firefox.");
     }
     if (!app.stream) await openCamera();
   } else {
@@ -378,15 +451,18 @@ async function onStart() {
     $("start-error").hidden = false;
   } finally {
     btn.disabled = false;
-    btn.textContent = "Start calibrating";
+    btn.textContent = "Start Calibrating";
   }
 }
 
 function endSession() {
   closeBreathe();
   app.sessionEnded = true;
+  app.sessionEnd = Date.now();
   stopCamera();
   $("btn-back").hidden = true;
+  $("quick-bar").hidden = true;
+  $("screen-app").classList.add("ended");
   $("notice").hidden = true;
   showBanner("");
   showView("summary");
@@ -421,6 +497,7 @@ function renderQuality(barsId, textId, d) {
 // whose own quality measure is below its pass line, and it is shown as such.
 
 const BASE_NAMES = { heart: "heart rate", breath: "breathing", blink: "blinks" };
+const cap = (s) => (s ? s[0].toUpperCase() + s.slice(1) : s);
 
 function metricStatus(d) {
   const dg = d.diag || {};
@@ -502,17 +579,21 @@ function renderCalibration(d) {
   for (const li of $("checklist").children) {
     li.classList.toggle("ok", !!checks[li.dataset.check]);
     const small = li.querySelector("small"), key = li.dataset.check;
-    if (st[key]) { small.textContent = st[key].text; small.dataset.state = st[key].state; }
+    if (st[key]) { small.textContent = cap(st[key].text); small.dataset.state = st[key].state; }
+    if (key === "blink" && app.quick && d.blink_rate === null) small.textContent = "Provisional at best in 45 s (needs 60 s)";
   }
   document.querySelector(".face-guide").classList.toggle("ok", !!d.face_found);
-  $("cal-face").textContent = d.face_found ? "face found" : "looking for your face";
+  $("cal-face").textContent = d.face_found ? "Face found" : "Looking for your face";
+  $("cal-lede").textContent = app.quick
+    ? `Quick read: ${Math.max(0, Math.ceil(QUICK_SEC - sessionSec()))} s left. Heart rate and breathing can be measured in this time; blink rate stays provisional and no baseline can form.`
+    : "Readings appear as soon as each one is ready. Your baseline keeps learning in the background, separately for heart rate, breathing and blinks.";
   renderQuality("cal-q", "cal-q-text", d);
 
   // The ring now counts toward the first live reading (about 10 s), not a full baseline.
   const secs = app.sessionStart ? (Date.now() - app.sessionStart) / 1000 : 0;
   const frac = Math.min(1, secs / 12);
   $("ring-secs").textContent = String(Math.floor(secs));
-  $("ring-sub").textContent = "until the first reading";
+  $("ring-sub").textContent = "Until the first reading";
   $("ring-bar").style.strokeDashoffset = String(RING_LEN * (1 - frac));
   const ticks = document.querySelectorAll(".ring-ticks line");
   ticks.forEach((t, i) => t.classList.toggle("on", i < Math.round(frac * ticks.length)));
@@ -526,13 +607,7 @@ function renderCalibration(d) {
 
   if (hasLiveReading(d) && !calibrationDone) {
     calibrationDone = true;
-    // C: the ring closes and grows into the live dial before the screen changes
-    if (app.style === "living" && !app.reduceMotion) {
-      $("screen-calibrate").classList.add("complete");
-      setTimeout(() => { $("screen-calibrate").classList.remove("complete"); showScreen("app"); showView("live"); }, 760);
-    } else {
-      showScreen("app"); showView("live");
-    }
+    showScreen("app"); showView("live");
   }
 }
 let calibrationDone = false;
@@ -555,8 +630,6 @@ function buildStatic() {
     ht.appendChild(svg("line", { x1: 200 + r1 * Math.cos(a), y1: 200 + r1 * Math.sin(a), x2: 200 + 196 * Math.cos(a), y2: 200 + 196 * Math.sin(a), class: major ? "major" : "" }));
   }
   // one grid line per second on the 6 s pulse strip
-  const grid = document.querySelector(".wave-grid");
-  for (let s = 1; s < 6; s++) grid.appendChild(svg("line", { x1: s * 100, x2: s * 100, y1: 0, y2: 80 }));
 }
 
 // ================================================================ live
@@ -626,7 +699,7 @@ function renderLive(d) {
     const diff = Math.round(hr - b.heart_rate);
     delta = diff === 0 ? `At your baseline of ${b.heart_rate.toFixed(0)}`
       : `${Math.abs(diff)} ${diff > 0 ? "above" : "below"} your baseline of ${b.heart_rate.toFixed(0)}`;
-  } else delta = baselineText(d, "heart", 0, "bpm") || "Baseline learning";
+  } else delta = app.quick ? "No baseline in a 45 s quick read" : cap(baselineText(d, "heart", 0, "bpm") || "Baseline learning");
   $("hero-delta").textContent = delta;
   renderQuality("hero-q", "hero-q-text", d);
   // the heart and its ring only animate on a reliable reading
@@ -634,320 +707,39 @@ function renderLive(d) {
   renderHalo(reliable || provisional ? d.pulse_wave : null);
   document.querySelector(".instrument").classList.toggle("weak", provisional);
   renderTide(d.breath_wave);
-  $("tide-label").textContent = `breathing · ${st.breath.text}`;
+  $("tide-label").textContent = `Breathing · ${st.breath.text}`;
   $("heart-caption").textContent = hr === null ? "Waiting for a heart rate. The heart stays still until there's a real reading."
     : provisional ? `Heart signal weak (${qualityLevel(d) ? qualityLevel(d).text : "--"}). The rate is provisional, so the heart isn't animated. The dashed ring is the unreliable pulse wave.`
     : `The heart beats at your measured average, ${hr.toFixed(0)} bpm. The ring is your pulse wave from the last 6 s.`;
 
-  // sections
-  $("sec-hr-v").textContent = fmt(hr, 0);
-  $("sec-hr-base").textContent = b.heart_rate === null ? "--" : `${b.heart_rate.toFixed(0)} bpm`;
-  const q = qualityLevel(d);
-  $("sec-hr-q").textContent = q ? (d.signal_quality !== null ? `${q.text} of 1` : q.text) : "--";
-  sparkline($("pulse-spark"), d.pulse_wave);
-  const avg = d.average_heart_rate;
-  if (avg) {
-    const value = avg.done ? avg.result : avg.running_average;
-    $("avg-v").textContent = fmt(value, 0);
-    $("hs-avg").textContent = value === null ? "--" : `${value.toFixed(0)} bpm${avg.done ? "" : " so far"}`;
-    $("avg-span").textContent = `over ${mmss(avg.duration_sec)}`;
-    $("avg-bar").style.width = `${Math.round((avg.progress || 0) * 100)}%`;
-    $("avg-sub").textContent = avg.done ? `Final, from ${avg.readings} readings`
-      : avg.readings === 0 ? "Waiting for heart rate"
-      : `Recording ${mmss(avg.recorded_sec)} of ${mmss(avg.duration_sec)}` + (avg.paused ? " · paused" : "");
+  // live state chip: one word, so the big number never has to explain itself
+  const chip = $("hr-state");
+  chip.dataset.state = st.heart.state;
+  chip.textContent = { reliable: "Reliable", provisional: "Provisional", collecting: "Measuring", none: "No face" }[st.heart.state];
+
+  // Session average: reliable seconds only, computed here from this session's history.
+  // (The server's 2-minute monitor also averages weak readings, so it isn't shown.)
+  const rel = app.history.filter((s) => s.hr !== null && s.hrState === "reliable");
+  if (rel.length) {
+    const avg = rel.reduce((a, s) => a + s.hr, 0) / rel.length;
+    $("avg-v").textContent = avg.toFixed(0);
+    let sub = `From ${rel.length} reliable second${rel.length === 1 ? "" : "s"} of ${mmss(sessionSec())}`;
+    if (b.heart_rate !== null) {
+      const diff = Math.round(avg - b.heart_rate);
+      sub += diff === 0 ? ` · at your baseline of ${b.heart_rate.toFixed(0)}` : ` · ${Math.abs(diff)} ${diff > 0 ? "above" : "below"} your baseline of ${b.heart_rate.toFixed(0)}`;
+    }
+    $("avg-sub").textContent = sub;
+  } else {
+    $("avg-v").textContent = "--";
+    $("avg-sub").textContent = d.heart_rate !== null ? "No reliable seconds yet · weak-signal readings are left out" : "Waiting for reliable readings";
   }
-  $("sec-br-v").textContent = fmt(d.breathing_rate, 1);
-  $("sec-br-base").textContent = b.breathing_rate === null ? "--" : `${b.breathing_rate.toFixed(1)} /min`;
-  $("sec-br-src").textContent = d.breathing_channel === "head" ? "From head motion · show your shoulders for better" : "From chest motion · optical flow";
-  sparkline($("breath-spark"), d.breath_wave);
-  $("sec-bl-v").textContent = fmt(d.blink_rate, 0);
-  $("sec-bl-base").textContent = b.blink_rate === null ? "--" : `${b.blink_rate.toFixed(0)} /min`;
+  $("avg-v").classList.toggle("empty", !rel.length);
 
   const fps = d.processed_fps;
   $("fps").textContent = d.camera_fps === null ? "" :
-    `camera ${fmt(d.camera_fps, 0)} fps · processed ${fmt(fps, 0)} fps` + (fps !== null && fps < 15 ? " · needs 15+" : "");
+    `Camera ${fmt(d.camera_fps, 0)} fps · processed ${fmt(fps, 0)} fps` + (fps !== null && fps < 15 ? " · needs 15+" : "");
 
   renderComposure(d);
-}
-
-// ================================================================ C · Cardiac Dial
-// Measured layers only: rate scale (40–160 bpm over 240°), baseline notch, elevated
-// band (baseline +15 % up to 160), needle at the measured average, and the real
-// 6 s pulse wave as the inner trace. The heart's beat and the aura are atmosphere,
-// paced by the measured average and shown only while the signal is good.
-
-const SCALE = { min: 40, max: 160, start: -120, sweep: 240 };
-const RING = { segments: 60, segSec: 10 };          // rolling 10 min, newest at 12 o'clock
-const polar = (r, deg) => {
-  const a = deg * Math.PI / 180;
-  return [200 + r * Math.sin(a), 200 - r * Math.cos(a)];
-};
-const arcPath = (r, a0, a1) => {
-  const [x0, y0] = polar(r, a0), [x1, y1] = polar(r, a1);
-  return `M${x0.toFixed(2)} ${y0.toFixed(2)} A${r} ${r} 0 ${Math.abs(a1 - a0) > 180 ? 1 : 0} 1 ${x1.toFixed(2)} ${y1.toFixed(2)}`;
-};
-const bpmAngle = (bpm) => SCALE.start + (Math.min(SCALE.max, Math.max(SCALE.min, bpm)) - SCALE.min) / (SCALE.max - SCALE.min) * SCALE.sweep;
-let ringSegs = [];
-let traceFlip = false;
-
-function buildDial() {
-  const scale = $("rate-scale");
-  scale.appendChild(svg("path", { class: "arc", d: arcPath(172, SCALE.start, SCALE.start + SCALE.sweep) }));
-  for (let bpm = SCALE.min; bpm <= SCALE.max; bpm += 5) {
-    const major = bpm % 20 === 0, a = bpmAngle(bpm);
-    const [x1, y1] = polar(major ? 163 : 167, a), [x2, y2] = polar(major ? 177 : 173, a);
-    scale.appendChild(svg("line", { x1, y1, x2, y2, class: major ? "major" : "" }));
-    if (major) {
-      const [tx, ty] = polar(153, a);
-      const t = svg("text", { x: tx, y: ty + 3.5, "text-anchor": "middle" });
-      t.textContent = String(bpm);
-      scale.appendChild(t);
-    }
-  }
-  const ring = $("sess-ring");
-  ringSegs = [];
-  for (let i = 0; i < RING.segments; i++) {
-    const a1 = -i * 6 - 0.7, a0 = -(i + 1) * 6 + 0.7;
-    const p = svg("path", { d: arcPath(192, a0, a1), class: "empty" });
-    ring.appendChild(p);
-    ringSegs.push(p);
-  }
-  for (let m = 0; m < 10; m++) {                     // a mark at each minute boundary
-    const [x1, y1] = polar(186, -m * 36), [x2, y2] = polar(198, -m * 36);
-    ring.appendChild(svg("line", { x1, y1, x2, y2 }));
-  }
-  const now = svg("text", { x: 200, y: 19, "text-anchor": "middle", class: "now" });
-  now.textContent = "now";
-  const back = svg("text", { x: 200, y: 386, "text-anchor": "middle" });
-  back.textContent = "−5 min";
-  ring.append(now, back);
-}
-
-function dialState(d) {
-  if (!d.face_found || d.heart_rate === null) return "none";
-  return d.signal_status === "good" ? "good" : "weak";
-}
-
-function renderTrace(wave, state) {
-  const vals = wave && wave.values ? wave.values.filter((v) => v !== null) : [];
-  if (state === "none" || vals.length < 8) { $("trace-a").setAttribute("d", ""); $("trace-b").setAttribute("d", ""); return; }
-  let lo = Infinity, hi = -Infinity;
-  for (const v of vals) { lo = Math.min(lo, v); hi = Math.max(hi, v); }
-  const span = hi - lo || 1, n = vals.length;
-  const d = vals.map((v, i) => {
-    const [x, y] = polar(128 + ((v - lo) / span - 0.5) * 18, (i / n) * 360);
-    return `${i ? "L" : "M"}${x.toFixed(1)},${y.toFixed(1)}`;
-  }).join(" ") + " Z";
-  // Cross-fade the previous sample into the new one. Shapes are never interpolated,
-  // so no in-between wave is ever drawn that wasn't measured.
-  traceFlip = !traceFlip;
-  const incoming = $(traceFlip ? "trace-b" : "trace-a"), outgoing = $(traceFlip ? "trace-a" : "trace-b");
-  incoming.setAttribute("d", d);
-  incoming.classList.add("on");
-  outgoing.classList.remove("on");
-}
-
-function renderRing() {
-  const now = (Date.now() - app.sessionStart) / 1000;
-  const buckets = ringSegs.map(() => ({ calm: 0, elevated: 0, other: 0 }));
-  for (let k = app.history.length - 1; k >= 0; k--) {
-    const s = app.history[k], age = now - s.t;
-    if (age >= RING.segments * RING.segSec) break;
-    const b = buckets[Math.floor(Math.max(0, age) / RING.segSec)];
-    if (s.state === "calm") b.calm++; else if (s.state === "elevated") b.elevated++; else b.other++;
-  }
-  buckets.forEach((b, i) => {
-    const total = b.calm + b.elevated + b.other;
-    const cls = total === 0 ? "empty" : b.elevated && b.elevated >= b.calm ? "elevated" : b.calm ? "calm" : "none";
-    if (ringSegs[i].getAttribute("class") !== cls) ringSegs[i].setAttribute("class", cls);
-  });
-}
-
-function renderDial(d) {
-  const dial = $("dial"), hr = d.heart_rate, base = d.baseline.heart_rate;
-  const state = dialState(d);
-  dial.dataset.state = state;
-  dial.dataset.composure = d.composure.state || "calibrating";
-  const needle = $("needle");
-  let note = "";
-  if (hr !== null) {
-    needle.style.transform = `rotate(${bpmAngle(hr).toFixed(2)}deg)`;
-    needle.classList.toggle("over", hr > SCALE.max);
-    needle.classList.toggle("under", hr < SCALE.min);
-    if (hr > SCALE.max) note = `above scale · ${hr.toFixed(0)} bpm`;
-    if (hr < SCALE.min) note = `below scale · ${hr.toFixed(0)} bpm`;
-  }
-  $("range-note").textContent = note;
-
-  const mark = $("base-mark");
-  if (base !== null) {
-    const a = bpmAngle(base), [x, y] = polar(183, a);
-    mark.setAttribute("transform", `translate(${x.toFixed(1)} ${y.toFixed(1)}) rotate(${(a + 180).toFixed(1)})`);
-    mark.setAttribute("visibility", "visible");
-    // elevated threshold: a thin line just outside the scale from baseline +15 % to the top,
-    // starting with a clear tick and a "+15 %" label
-    const thr = base * 1.15, zs = $("zone-start");
-    if (thr < SCALE.max) {
-      const at = bpmAngle(thr);
-      $("zone-elev").setAttribute("d", arcPath(180, at, SCALE.start + SCALE.sweep));
-      const [x1, y1] = polar(176, at), [x2, y2] = polar(186, at);
-      zs.setAttribute("x1", x1); zs.setAttribute("y1", y1); zs.setAttribute("x2", x2); zs.setAttribute("y2", y2);
-      
-
-      zs.setAttribute("visibility", "visible");
-    } else {
-      $("zone-elev").setAttribute("d", "");
-      zs.setAttribute("visibility", "hidden");
-    }
-  } else {
-    mark.setAttribute("visibility", "hidden");
-    $("zone-elev").setAttribute("d", "");
-    $("zone-start").setAttribute("visibility", "hidden");
-  }
-  renderTrace(d.pulse_wave, state);
-  renderRing();
-
-  const stage = $("c-heart");
-  if (state === "good") { const beat = (60 / hr).toFixed(3) + "s"; stage.style.setProperty("--beat", beat); dial.style.setProperty("--beat", beat); }
-  stage.classList.toggle("beating", state === "good");
-
-  const legend = base !== null
-    ? `▲ baseline ${base.toFixed(0)}` + (base * 1.15 < SCALE.max ? ` · ━ elevated above ${(base * 1.15).toFixed(0)}` : "")
-    : "baseline appears after calibration";
-  const caption = state === "good"
-    ? `${legend}\nbeat paced at the measured average · inner line: pulse wave, last 6 s`
-    : state === "weak" ? `${legend}\nsignal weak · the line and rate may be unreliable` : `${legend}\nno heart rate yet`;
-  $("dial-caption").textContent = caption;
-  const alert = $("dial-alert");
-  const alertText = !d.face_found ? "No face in view. Face the camera."
-    : state === "weak" ? "Signal weak. Readings are unreliable until it steadies. Hold still, keep the light even." : "";
-  alert.textContent = alertText;
-  alert.hidden = !alertText;
-
-  const thrText = base !== null ? `, elevated above ${(base * 1.15).toFixed(0)}` : "";
-  $("dial-desc").textContent = hr === null ? "No heart rate yet."
-    : `Heart rate ${hr.toFixed(0)} bpm${base !== null ? `, baseline ${base.toFixed(0)}` : ""}${thrText}. Signal ${state === "good" ? "good" : "weak, readings unreliable"}.${note ? " " + note + "." : ""}`;
-}
-
-// ================================================================ C · readouts + drawer
-
-function setValue(el, text) {
-  if (el.textContent === text) return;
-  el.textContent = text;
-  if (app.reduceMotion) return;
-  el.classList.remove("value-tick");
-  void el.offsetWidth;                               // restart the short settle animation
-  el.classList.add("value-tick");
-}
-
-function deltaText(now, base, digits, unit) {
-  if (base === null || base === undefined) return "baseline after calibration";
-  if (now === null) return `baseline ${base.toFixed(digits)} ${unit}`;
-  const diff = now - base, r = Number(diff.toFixed(digits));
-  const sign = r > 0 ? "+" : r < 0 ? "−" : "±";
-  return `${sign}${Math.abs(r).toFixed(digits)} vs baseline ${base.toFixed(digits)}`;
-}
-
-let lastCState = null;
-
-function renderLiveC(d) {
-  const b = d.baseline, c = d.composure;
-  setValue($("c2-hr"), fmt(d.heart_rate, 0));
-  setValue($("c2-br"), fmt(d.breathing_rate, 1));
-  setValue($("c2-bl"), fmt(d.blink_rate, 0));
-  // each readout: its own baseline progress or delta, and its own status line
-  const st = metricStatus(d);
-  const rows = [
-    [".ro-hr", "c2-hr", "heart", "heart_rate", 0, "bpm", c.hr_high],
-    [".ro-br", "c2-br", "breath", "breathing_rate", 1, "/min", c.breath_high],
-    [".ro-bl", "c2-bl", "blink", "blink_rate", 0, "/min", c.blink_low],
-  ];
-  for (const [sel, id, key, field, digits, unit, flag] of rows) {
-    const el = document.querySelector(sel), s = st[key];
-    const learning = baselineText(d, key, digits, unit);
-    let dText = learning === null ? deltaText(d[field], b[field], digits, unit) : learning;
-    if (key === "blink" && c.blink_baseline_too_low) dText = "blink baseline too low to judge";
-    $(id + "-d").textContent = dText;
-    $(id + "-s").textContent = s.text;
-    $(id + "-s").dataset.state = s.state;
-    el.classList.toggle("flagged", flag === true);
-    el.classList.toggle("provisional", s.state === "provisional" && d[field] !== null);
-    el.classList.toggle("absent", d[field] === null);
-    el.querySelector(".ro-d").classList.toggle("up", flag === true);
-  }
-  renderQuality("c2-q", "c2-q-text", d);
-  $("c2-q-text").textContent = "heart signal " + $("c2-q-text").textContent;
-
-  const state = c.state;
-  const pill = $("c2-state");
-  pill.dataset.state = state === null ? "unknown" : state;
-  pill.textContent = state === null ? "no reading" : state === "calibrating" ? "learning baseline" : state === "insufficient" ? "insufficient data" : state;
-  let note = state === null ? "No current readings to compare."
-    : state === "elevated" ? "You've drifted from your usual rhythm."
-    : state === "calm" ? "Steady. Within your usual range."
-    : state === "insufficient" ? "Not enough measurements to judge composure yet."
-    : "Learning your baseline.";
-  if (c.blink_baseline_too_low) note += " Blinks aren't used: your blink baseline is too low to judge.";
-  $("c2-basis").textContent = composureBasis(c);
-  if ($("c2-note").textContent !== note) {
-    $("c2-note").textContent = note;
-    if (lastCState !== null && state !== lastCState && !app.reduceMotion) {
-      const st = $("c2-statement");
-      st.classList.remove("shift"); void st.offsetWidth; st.classList.add("shift");
-    }
-  }
-  lastCState = state;
-
-  renderDial(d);
-  renderTideInto("tide-c", d.breath_wave);
-  $("tide-c-label").textContent = d.breathing_rate === null ? "breathing · measured · waiting for 20 s of signal"
-    : `breathing · measured · last 30 s · from your ${d.breathing_channel}`;
-  const fps = d.processed_fps;
-  $("fps-c").textContent = d.camera_fps === null ? "" :
-    `outer ring: last 10 min, 10 s per mark, newest at top · camera ${fmt(d.camera_fps, 0)} fps · processed ${fmt(fps, 0)} fps` + (fps !== null && fps < 15 ? " · needs 15+" : "");
-  if (!$("drawer").hidden) updateDrawer(d);
-}
-
-const DRAWER = {
-  heart_rate: { title: "Heart rate", kicker: "From skin colour · rPPG", unit: "bpm", digits: 0, wave: "pulse_wave", waveTitle: "Pulse wave", waveMeta: "measured · last 6 s",
-    explain: (b) => `Estimated from tiny colour changes in your skin. It's an average over the last few seconds, not individual beats.${b !== null ? ` Your baseline is ${b.toFixed(0)} bpm; it counts as raised above ${(b * 1.15).toFixed(0)}.` : ""}` },
-  breathing_rate: { title: "Breathing", kicker: "From chest motion · optical flow", unit: "/min", digits: 1, wave: "breath_wave", waveTitle: "Breathing wave", waveMeta: "measured · last 30 s",
-    explain: (b) => `Measured from the rise and fall of your chest (or head if your shoulders aren't visible), averaged over 30 seconds, so it trails real changes.${b !== null ? ` Your baseline is ${b.toFixed(1)}/min; it counts as raised above ${(b * 1.25).toFixed(1)}.` : ""}` },
-  blink_rate: { title: "Blinks", kicker: "From eye landmarks", unit: "/min", digits: 0, wave: null,
-    explain: (b) => `Counted over the last 60 seconds from the openness of your eyes.${b !== null ? ` Your baseline is ${b.toFixed(0)}/min; it counts as low below ${(b * 0.6).toFixed(1)} and at least 3/min under it.` : ""}` },
-};
-let drawerMetric = null;
-
-function openDrawer(metric, btn) {
-  drawerMetric = metric;
-  const m = DRAWER[metric];
-  $("drawer-title").textContent = m.title;
-  $("drawer-kicker").textContent = m.kicker;
-  $("drawer-u").textContent = m.unit;
-  $("drawer-chart").dataset.trend = metric;
-  $("drawer-chart").setAttribute("aria-label", `${m.title} over this session`);
-  $("drawer-wave-fig").hidden = !m.wave;
-  if (m.wave) { $("drawer-wave-title").textContent = m.waveTitle; $("drawer-wave-meta").textContent = m.waveMeta; }
-  $("drawer-wave").classList.toggle("heart", metric === "heart_rate");
-  for (const r of document.querySelectorAll(".ro")) r.setAttribute("aria-expanded", String(r === btn));
-  if ($("drawer").hidden) openDialog($("drawer"), $("drawer-close"));
-  if (app.last) updateDrawer(app.last);
-  renderCharts();
-}
-
-function updateDrawer(d) {
-  const m = DRAWER[drawerMetric];
-  if (!m) return;
-  $("drawer-v").textContent = fmt(d[drawerMetric], m.digits);
-  $("drawer-explain").textContent = m.explain(d.baseline[drawerMetric]);
-  if (m.wave) sparkline($("drawer-wave"), d[m.wave]);
-}
-
-function closeDrawer() {
-  if ($("drawer").hidden) return;
-  for (const r of document.querySelectorAll(".ro")) r.setAttribute("aria-expanded", "false");
-  closeDialog($("drawer"));
-  drawerMetric = null;
 }
 
 // ================================================================ composure
@@ -967,15 +759,18 @@ function renderComposure(d) {
   const c = d.composure, b = d.baseline, state = c.state;
   const pill = $("c-state");
   pill.dataset.state = state === null ? "unknown" : state;
-  pill.textContent = state === null ? "No reading" : state === "calibrating" ? "learning baseline" : state === "insufficient" ? "insufficient data" : state;
+  pill.textContent = state === null ? "No reading" : state === "calibrating" ? (app.quick ? "Not available" : "Learning baseline")
+    : state === "insufficient" ? "Insufficient data" : cap(state);
   let note = state === null ? "No current readings to compare."
     : state === "elevated" ? "You've drifted from your usual rhythm."
     : state === "calm" ? "Steady. You're within your usual range."
     : state === "insufficient" ? "Not enough data to judge yet."
-    : "Learning your baseline.";
+    : app.quick ? "Composure needs a personal baseline." : "Learning your baseline.";
   $("c-note").textContent = note;
   // the reason goes on its own smaller line, so the statement stays short
-  let basis = composureBasis(c);
+  let basis = app.quick && state === "calibrating"
+    ? "Each baseline needs 60 s after its first valid reading, longer than a 45 s quick read."
+    : composureBasis(c);
   if (c.blink_baseline_too_low) basis += " Blinks aren't used: your blink baseline is too low to judge.";
   $("c-basis").textContent = basis.trim();
 
@@ -985,12 +780,12 @@ function renderComposure(d) {
     const row = $(r.row), flag = c[r.flag], now = d[r.key], base = b[r.key];
     const s = st[statusKey[r.row]];
     row.querySelector("[data-now]").textContent = now === null ? "--" : fmt(now, r.digits) + r.unit;
-    row.querySelector("[data-base]").textContent = base === null ? "baseline learning" : `baseline ${fmt(base, r.digits)}`;
+    row.querySelector("[data-base]").textContent = base === null ? (app.quick ? "No baseline" : "Baseline learning") : `Baseline ${fmt(base, r.digits)}`;
     row.classList.toggle("provisional", s.state === "provisional" && now !== null);
-    row.title = s.text;
+    row.title = cap(s.text);
     const cell = row.querySelector("[data-flag]");
     const tooLow = r.flag === "blink_low" && c.blink_baseline_too_low;
-    cell.textContent = flag === true ? "shifted" : flag === false ? "ok" : tooLow ? "n/a" : "–";
+    cell.textContent = flag === true ? "Shifted" : flag === false ? "OK" : tooLow ? "N/A" : "–";
     cell.className = "flag" + (flag === true ? " on" : flag === false ? " ok" : "");
     row.classList.toggle("flagged", flag === true);
     // bar: now on a scale of twice the baseline, so the baseline tick sits at the middle
@@ -1063,67 +858,94 @@ function updateNotice(d) {
 }
 
 // ================================================================ session charts (with hover readout)
+// Every point is one real sample from this session (one per poll). Reliable and
+// provisional samples are drawn differently; gaps (no reading) are left as gaps.
 
-function chart(svgEl, samples, key, baseline) {
-  const w = Math.max(320, svgEl.clientWidth || 900), h = 190;
+const CHART_H = { default: 170, short: 110 };
+const UNITS = { heart_rate: "bpm", breathing_rate: "/min", blink_rate: "/min", quality: "" };
+const DIGITS = { heart_rate: 0, breathing_rate: 1, blink_rate: 0, quality: 2 };
+
+function chart(svgEl, samples, opts) {
+  const h = svgEl.classList.contains("short") ? CHART_H.short : CHART_H.default;
+  const w = Math.max(320, svgEl.clientWidth || 900);
   svgEl.setAttribute("viewBox", `0 0 ${w} ${h}`);
   const pad = { l: 40, r: 12, t: 12, b: 24 };
-  const pts = samples.filter((s) => s[key] !== null);
+  const pts = samples.filter((s) => s.v !== null);
   svgEl.replaceChildren();
   svgEl.__chart = null;
   if (pts.length < 2) return false;
 
-  const tMax = Math.max(60, samples[samples.length - 1].t);
-  let lo = Math.min(...pts.map((s) => s[key])), hi = Math.max(...pts.map((s) => s[key]));
-  if (baseline !== null) { lo = Math.min(lo, baseline); hi = Math.max(hi, baseline); }
-  const margin = Math.max(1, (hi - lo) * 0.15);
-  lo = Math.max(0, lo - margin); hi += margin;
+  const { baseline = null, fixed = null, pass = null } = opts;
+  const tMax = Math.max(30, samples[samples.length - 1].t);
+  let lo, hi;
+  if (fixed) [lo, hi] = fixed;
+  else {
+    lo = Math.min(...pts.map((s) => s.v)); hi = Math.max(...pts.map((s) => s.v));
+    if (baseline !== null) { lo = Math.min(lo, baseline); hi = Math.max(hi, baseline); }
+    const margin = Math.max(1, (hi - lo) * 0.15);
+    lo = Math.max(0, lo - margin); hi += margin;
+  }
   const x = (t) => pad.l + (t / tMax) * (w - pad.l - pad.r);
   const y = (v) => pad.t + (1 - (v - lo) / (hi - lo)) * (h - pad.t - pad.b);
 
   const bands = svg("g");
-  let start = null;
-  samples.forEach((s, i) => {
-    const on = s.state === "elevated";
-    if (on && start === null) start = s.t;
-    if ((!on || i === samples.length - 1) && start !== null) {
-      bands.appendChild(svg("rect", { class: "band", x: x(start), y: pad.t, width: Math.max(2, x(s.t) - x(start)), height: h - pad.t - pad.b }));
-      start = null;
-    }
-  });
+  if (opts.bands) {
+    let start = null;
+    samples.forEach((s, i) => {
+      const on = s.state === "elevated";
+      if (on && start === null) start = s.t;
+      if ((!on || i === samples.length - 1) && start !== null) {
+        bands.appendChild(svg("rect", { class: "band", x: x(start), y: pad.t, width: Math.max(2, x(s.t) - x(start)), height: h - pad.t - pad.b }));
+        start = null;
+      }
+    });
+  }
   const grid = svg("g", { class: "grid" }), axis = svg("g", { class: "axis" });
-  for (let i = 0; i <= 3; i++) {
-    const v = lo + (hi - lo) * i / 3;
+  const rows = h < 150 ? 2 : 3;
+  for (let i = 0; i <= rows; i++) {
+    const v = lo + (hi - lo) * i / rows;
     grid.appendChild(svg("line", { x1: pad.l, x2: w - pad.r, y1: y(v), y2: y(v) }));
     const label = svg("text", { x: pad.l - 8, y: y(v) + 4, "text-anchor": "end" });
-    label.textContent = v.toFixed(0);
+    label.textContent = fixed ? v.toFixed(1) : v.toFixed(0);
     axis.appendChild(label);
   }
-  const step = tMax > 600 ? 120 : tMax > 240 ? 60 : 30;
+  const step = tMax > 600 ? 120 : tMax > 240 ? 60 : tMax > 90 ? 30 : 15;
   for (let t = 0; t <= tMax; t += step) {
     const label = svg("text", { x: x(t), y: h - 4, "text-anchor": "middle" });
     label.textContent = mmss(t);
     axis.appendChild(label);
   }
+  // runs of consecutive samples with the same reliability share one polyline;
+  // a run shares its first point with the previous one so the line is continuous
   const series = svg("g");
-  let run = [];
-  const flush = () => { if (run.length > 1) series.appendChild(svg("polyline", { class: "series", points: run.join(" ") })); run = []; };
+  let run = [], runProv = null, prevPt = null;
+  const flush = () => {
+    if (run.length > 1) series.appendChild(svg("polyline", { class: "series" + (runProv ? " prov" : ""), points: run.join(" ") }));
+    run = [];
+  };
   for (const s of samples) {
-    if (s[key] === null) flush(); else run.push(`${x(s.t).toFixed(1)},${y(s[key]).toFixed(1)}`);
+    if (s.v === null) { flush(); prevPt = null; runProv = null; continue; }
+    const p = `${x(s.t).toFixed(1)},${y(s.v).toFixed(1)}`;
+    if (runProv !== null && s.prov !== runProv) { flush(); if (prevPt) run.push(prevPt); }
+    runProv = s.prov;
+    run.push(p);
+    prevPt = p;
   }
   flush();
   svgEl.append(bands, grid, axis, series);
-  if (baseline !== null) {
-    svgEl.appendChild(svg("line", { class: "baseline", x1: pad.l, x2: w - pad.r, y1: y(baseline), y2: y(baseline) }));
-    const bl = svg("text", { class: "base-label", x: pad.l + 6, y: y(baseline) - 6, "text-anchor": "start" });
-    bl.textContent = `baseline ${baseline.toFixed(key === "breathing_rate" ? 1 : 0)}`;
-    svgEl.appendChild(bl);
-  }
+  const refLine = (v, cls, labelCls, text) => {
+    svgEl.appendChild(svg("line", { class: cls, x1: pad.l, x2: w - pad.r, y1: y(v), y2: y(v) }));
+    const t = svg("text", { class: labelCls, x: w - pad.r - 4, y: y(v) - 6, "text-anchor": "end" });
+    t.textContent = text;
+    svgEl.appendChild(t);
+  };
+  if (baseline !== null) refLine(baseline, "baseline", "base-label", `Baseline ${baseline.toFixed(DIGITS[opts.key])}`);
+  if (pass !== null) refLine(pass, "passline", "pass-label", `Pass line ${pass.toFixed(2)}`);
   const cross = svg("line", { class: "cross", y1: pad.t, y2: h - pad.b, visibility: "hidden" });
   const dot = svg("circle", { class: "dot", r: 4, visibility: "hidden" });
   dot.style.stroke = getComputedStyle(svgEl.querySelector(".series") || svgEl).stroke;
   svgEl.append(cross, dot);
-  svgEl.__chart = { samples, key, x, y, w, cross, dot, pad };
+  svgEl.__chart = { samples, key: opts.key, x, y, w, h, cross, dot, pad };
   return true;
 }
 
@@ -1134,19 +956,19 @@ function chartHover(svgEl, tip, e) {
   const px = (e.clientX - rect.left) * (c.w / rect.width);
   let best = null, bestDist = Infinity;
   for (const s of c.samples) {
-    if (s[c.key] === null) continue;
+    if (s.v === null) continue;
     const dist = Math.abs(c.x(s.t) - px);
     if (dist < bestDist) { bestDist = dist; best = s; }
   }
   if (!best) return;
-  const cx = c.x(best.t), cy = c.y(best[c.key]);
+  const cx = c.x(best.t), cy = c.y(best.v);
   c.cross.setAttribute("x1", cx); c.cross.setAttribute("x2", cx); c.cross.setAttribute("visibility", "visible");
   c.dot.setAttribute("cx", cx); c.dot.setAttribute("cy", cy); c.dot.setAttribute("visibility", "visible");
-  const unit = { heart_rate: "bpm", breathing_rate: "/min", blink_rate: "/min" }[c.key];
-  const state = best.state === "elevated" ? " · shifted" : best.state === "calm" ? " · calm" : "";
-  tip.textContent = `${mmss(best.t)} · ${best[c.key].toFixed(c.key === "breathing_rate" ? 1 : 0)} ${unit}${state}`;
+  const unit = UNITS[c.key] ? " " + UNITS[c.key] : "";
+  const tags = [best.prov ? "provisional" : "", best.state === "elevated" ? "shifted" : best.state === "calm" ? "calm" : ""].filter(Boolean);
+  tip.textContent = `${mmss(best.t)} · ${best.v.toFixed(DIGITS[c.key])}${unit}${tags.length ? " · " + tags.join(" · ") : ""}`;
   tip.style.left = `${(cx / c.w) * rect.width}px`;
-  tip.style.top = `${Math.max(0, (cy / 190) * rect.height - 40)}px`;
+  tip.style.top = `${Math.max(0, (cy / c.h) * rect.height - 40)}px`;
   tip.hidden = false;
 }
 
@@ -1156,19 +978,30 @@ function chartLeave(svgEl, tip) {
   if (c) { c.cross.setAttribute("visibility", "hidden"); c.dot.setAttribute("visibility", "hidden"); }
 }
 
-// Draws the session chart inside every section whose graph is open.
+// What each report chart plots, taken straight from the session history.
+const SERIES = {
+  heart_rate: (s) => ({ v: s.hr, prov: s.hrState !== "reliable" }),
+  breathing_rate: (s) => ({ v: s.br, prov: false }),
+  blink_rate: (s) => ({ v: s.blink, prov: !s.blinkFull }),
+  quality: (s) => ({ v: s.q, prov: false }),
+};
+
 function renderCharts() {
+  if (app.view !== "summary") return;
   const d = app.last;
-  for (const svgEl of document.querySelectorAll(".metric-panel:not([hidden]) .chart, #drawer:not([hidden]) .chart")) {
+  for (const svgEl of document.querySelectorAll("#view-summary .chart")) {
     const key = svgEl.dataset.trend;
-    const histKey = { heart_rate: "hr", breathing_rate: "br", blink_rate: "blink" }[key];
-    const base = d && d.baseline ? d.baseline[key] : null;
+    const base = key !== "quality" && d && d.baseline ? d.baseline[key] : null;
     const wrap = svgEl.parentElement, tip = wrap.querySelector(".tip-box");
-    const drawn = chart(svgEl, app.history.map((s) => ({ t: s.t, state: s.state, [key]: s[histKey] })), key, base);
+    const samples = app.history.map((s) => ({ t: s.t, state: s.state, ...SERIES[key](s) }));
+    const drawn = chart(svgEl, samples, {
+      key, baseline: base ?? null, bands: key !== "quality",
+      fixed: key === "quality" ? [0, 1] : null, pass: key === "quality" && hasQualityScale() ? 0.5 : null,
+    });
     if (!drawn) {
       tip.hidden = true;
-      const msg = svg("text", { x: "50%", y: 95, "text-anchor": "middle", class: "chart-empty" });
-      msg.textContent = "The graph fills in as readings arrive.";
+      const msg = svg("text", { x: "50%", y: svgEl.classList.contains("short") ? 60 : 90, "text-anchor": "middle", class: "chart-empty" });
+      msg.textContent = emptyChartText(key);
       svgEl.appendChild(msg);
     } else if (wrap.__pointer) {
       chartHover(svgEl, tip, wrap.__pointer);   // keep the readout under the pointer across redraws
@@ -1176,62 +1009,201 @@ function renderCharts() {
   }
 }
 
-function toggleGraph(btn) {
-  const panel = $(btn.getAttribute("aria-controls"));
-  const open = panel.hidden;
-  panel.hidden = !open;
-  btn.setAttribute("aria-expanded", String(open));
-  btn.textContent = open ? "Hide graph" : "Show graph";
-  if (open) renderCharts();
+// rPPG reports a 0–1 quality with a 0.50 pass line; colour mode reports SNR instead.
+const hasQualityScale = () => app.history.some((s) => s.q !== null);
+
+function emptyChartText(key) {
+  if (!app.history.length) return "No readings were recorded in this session.";
+  return {
+    heart_rate: "No heart-rate readings in this session.",
+    breathing_rate: app.quick ? "Too short for breathing: it needs 20 s of steady signal." : "No breathing readings in this session.",
+    blink_rate: "No blink-rate readings in this session.",
+    quality: "No 0–1 heart-signal quality was reported.",
+  }[key];
 }
 
-// ================================================================ summary
+// ================================================================ summary: session report
 
-function stats(key) {
-  const vals = app.history.map((s) => s[key]).filter((v) => v !== null);
-  if (!vals.length) return null;
-  return { mean: vals.reduce((a, b) => a + b, 0) / vals.length, min: Math.min(...vals), max: Math.max(...vals) };
+const meanOfKey = (rows, k) => (rows.length ? rows.reduce((a, s) => a + s[k], 0) / rows.length : null);
+const pctText = (n, of) => (of ? `${Math.round((n / of) * 100)}%` : "--");
+
+function summaryData() {
+  const H = app.history, n = H.length;
+  const hrAll = H.filter((s) => s.hr !== null);
+  const hrRel = hrAll.filter((s) => s.hrState === "reliable");
+  const br = H.filter((s) => s.br !== null);
+  const blink = H.filter((s) => s.blink !== null);
+  const blinkFull = blink.filter((s) => s.blinkFull);
+  const qs = H.filter((s) => s.q !== null);
+  const judged = H.filter((s) => s.state === "calm" || s.state === "elevated");
+  const range = (rows, k) => (rows.length ? [Math.min(...rows.map((s) => s[k])), Math.max(...rows.map((s) => s[k]))] : null);
+  return {
+    n, face: H.filter((s) => s.face).length,
+    hrAll, hrRel, hrMean: meanOfKey(hrRel, "hr"), hrRange: range(hrRel, "hr"),
+    br, brMean: meanOfKey(br, "br"), brRange: range(br, "br"),
+    blink, blinkFull, blinkLast: blink.length ? blink[blink.length - 1] : null, blinkFullMean: meanOfKey(blinkFull, "blink"),
+    qMean: meanOfKey(qs, "q"),
+    judged, calm: judged.filter((s) => s.state === "calm").length,
+  };
+}
+
+// One overview tile: value, a one-line status (ok / warn / na) and a supporting line.
+function setOv(id, value, sub, na, status) {
+  $(id).textContent = value;
+  $(id).classList.toggle("na", !!na);
+  $(id + "-sub").textContent = sub;
+  const st = $(id + "-st");
+  st.textContent = status ? status[0] : "";
+  st.dataset.state = status ? status[1] : "";
 }
 
 function renderSummary() {
-  const dur = app.sessionStart ? (Date.now() - app.sessionStart) / 1000 : 0;
-  $("sum-when").textContent = app.sessionEnded ? "Session ended" : "Session in progress";
-  $("sum-dur").textContent = mmss(dur);
-  const judged = app.history.filter((s) => s.state === "calm" || s.state === "elevated");
-  const calm = judged.filter((s) => s.state === "calm").length;
-  $("sum-dur-sub").textContent = `${judged.length} s compared with your baseline`;
-  $("sum-calm").textContent = judged.length ? Math.round(calm / judged.length * 100).toString() : "--";
-  $("sum-episodes").textContent = String(app.events.length);
-  $("sum-ex").textContent = String(app.exercises.length);
+  const S = summaryData(), b = app.last && app.last.baseline ? app.last.baseline : {};
+  const end = app.sessionEnded ? app.sessionEnd : Date.now();
+  const dur = app.sessionStart ? (end - app.sessionStart) / 1000 : 0;
+  const when = app.sessionStart ? new Date(app.sessionStart).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
+  $("sum-when").textContent = `${app.sessionEnded ? "Session report" : "Session report · in progress"}${when ? " · started " + when : ""}`;
+  $("sum-title").textContent = app.quick ? `Quick read, ${mmss(dur)}` : `Session of ${mmss(dur)}`;
+  $("btn-back").hidden = app.sessionEnded;
 
-  const tl = $("sum-timeline");
-  tl.replaceChildren();
-  let prev = null, count = 0;
-  const push = () => { if (prev !== null) { const i = document.createElement("i"); i.className = prev; i.style.flexGrow = String(count); tl.appendChild(i); } };
-  for (const s of app.history) {
-    const kind = s.state === "calm" || s.state === "elevated" ? s.state : "none";
-    if (kind !== prev) { push(); prev = kind; count = 0; }
-    count++;
-  }
-  push();
+  const quick = $("rep-quick");
+  quick.hidden = !app.quick;
+  if (app.quick) quick.textContent = "45-second quick read (experimental). No personal baseline can form in 45 s, because each baseline needs 60 s after its first valid reading, so there is no composure result and no comparison with your baseline. Blink rates are counted over less than the full 60 s window, so they are provisional. Heart rate and breathing use the same quality checks as a full session.";
 
-  const keys = { heart_rate: ["hr", 0, "bpm"], breathing_rate: ["br", 1, "/min"], blink_rate: ["blink", 0, "/min"] };
-  for (const card of document.querySelectorAll(".sum-metric")) {
-    const [k, digits, unit] = keys[card.dataset.sum];
-    const st = stats(k);
-    card.querySelector("[data-mean]").textContent = st ? st.mean.toFixed(digits) : "--";
-    const base = app.last && app.last.baseline ? app.last.baseline[card.dataset.sum] : null;
-    card.querySelector("[data-range]").textContent = st
-      ? `range ${st.min.toFixed(digits)}–${st.max.toFixed(digits)} ${unit}` + (base !== null && base !== undefined ? ` · baseline ${base.toFixed(digits)}` : "")
-      : "no readings";
+  // overview
+  const relPct = S.n ? S.hrRel.length / S.n : 0;
+  setOv("ov-dur", mmss(dur), `${S.n} s with readings · face in view ${pctText(S.face, S.n)}`, false,
+    app.sessionEnded ? [app.quick ? "Quick read" : "Complete", "ok"] : ["In progress", "warn"]);
+  setOv("ov-hr", S.hrMean === null ? "--" : S.hrMean.toFixed(0),
+    S.hrMean === null ? (S.hrAll.length ? `${S.hrAll.length} s of weak-signal readings only; not averaged` : "No heart-rate readings")
+      : `Reliable seconds only · range ${S.hrRange[0].toFixed(0)}–${S.hrRange[1].toFixed(0)}` + (b.heart_rate != null ? ` · baseline ${b.heart_rate.toFixed(0)}` : ""),
+    S.hrMean === null,
+    S.hrMean === null ? (S.hrAll.length ? ["Provisional only", "warn"] : ["Unavailable", "na"]) : relPct >= 0.6 ? ["Reliable", "ok"] : ["Partly reliable", "warn"]);
+  setOv("ov-br", S.brMean === null ? "--" : S.brMean.toFixed(1),
+    S.brMean === null ? (app.quick ? "Needs 20 s of steady signal" : "No breathing readings")
+      : `${S.br.length} s of readings · range ${S.brRange[0].toFixed(1)}–${S.brRange[1].toFixed(1)}` + (b.breathing_rate != null ? ` · baseline ${b.breathing_rate.toFixed(1)}` : ""),
+    S.brMean === null, S.brMean === null ? ["Unavailable", "na"] : ["Measured", "ok"]);
+  if (S.blinkFull.length) {
+    setOv("ov-bl", S.blinkFullMean.toFixed(0), `Average of full 60 s counts (${S.blinkFull.length} s)` + (b.blink_rate != null ? ` · baseline ${b.blink_rate.toFixed(0)}` : ""), false, ["Full 60 s window", "ok"]);
+  } else if (S.blinkLast) {
+    setOv("ov-bl", `≈${S.blinkLast.blink.toFixed(0)}`, "Last count covered under 60 s", false, ["Provisional", "warn"]);
+  } else setOv("ov-bl", "--", "No blink-rate readings", true, ["Unavailable", "na"]);
+  setOv("ov-q", pctText(S.hrRel.length, S.n), S.qMean === null ? "Of seconds with readings" : `Of seconds with readings · mean quality ${S.qMean.toFixed(2)} (pass 0.50)`, !S.n,
+    !S.n ? ["No data", "na"] : relPct >= 0.6 ? ["Good", "ok"] : ["Often weak", "warn"]);
+  if (S.judged.length) {
+    setOv("ov-c", String(Math.round(S.calm / S.judged.length * 100)), `Of ${S.judged.length} judged seconds within baseline · ${app.events.length} elevated moment${app.events.length === 1 ? "" : "s"}`, false,
+      app.events.length ? ["Some elevated", "warn"] : ["Within baseline", "ok"]);
+    $("ov-c-u").textContent = "% calm";
+  } else {
+    setOv("ov-c", "--", app.quick ? "Not available in a 45 s quick read" : "Not judged: fewer than two baselines were ready", true, ["Not judged", "na"]);
+    $("ov-c-u").textContent = "";
   }
+  $("dl-wrap").hidden = !app.sessionEnded || !app.history.length;
+
+  // composure block
+  $("sum-calm").textContent = S.judged.length ? String(Math.round(S.calm / S.judged.length * 100)) : "--";
+  $("sum-calm-u").textContent = S.judged.length ? `% of ${S.judged.length} judged seconds within your baseline` : "Composure was not judged in this session";
+  stripInto($("sum-timeline"), app.history.map((s) => (s.state === "calm" || s.state === "elevated" ? s.state : "none")));
+  const bm = (app.last && app.last.baseline && app.last.baseline.metrics) || {};
+  const bl = [["Heart rate", "heart", "heart_rate", 0, "bpm"], ["Breathing", "breath", "breathing_rate", 1, "/min"], ["Blinks", "blink", "blink_rate", 0, "/min"]];
+  $("baselines").replaceChildren(...bl.flatMap(([label, k, field, dg, unit]) => {
+    const dt = document.createElement("dt"), dd = document.createElement("dd");
+    dt.textContent = `${label} baseline`;
+    const m = bm[k];
+    dd.textContent = b[field] != null ? `${b[field].toFixed(dg)} ${unit}`
+      : m ? `Not ready · ${Math.floor(m.valid_sec || 0)} of ${m.need_valid_sec} s valid` : "Not ready";
+    return [dt, dd];
+  }));
+
+  // availability strips
+  const rows = [
+    ["Heart rate", app.history.map((s) => (s.hr === null ? "none" : s.hrState === "reliable" ? "rel" : "prov")), S.hrRel.length],
+    ["Breathing", app.history.map((s) => (s.br === null ? "none" : "rel")), S.br.length],
+    ["Blinks", app.history.map((s) => (s.blink === null ? "none" : s.blinkFull ? "rel" : "prov")), S.blinkFull.length],
+    ["Face", app.history.map((s) => (s.face ? "rel" : "none")), S.face],
+  ];
+  $("avail").replaceChildren(...rows.map(([label, kinds, good]) => {
+    const row = document.createElement("div");
+    row.className = "avail-row";
+    const name = document.createElement("span"); name.textContent = label;
+    const strip = document.createElement("div"); strip.className = "strip"; stripInto(strip, kinds);
+    const pc = document.createElement("span"); pc.className = "pc"; pc.textContent = pctText(good, S.n);
+    pc.title = "Reliable share of seconds with readings";
+    row.append(name, strip, pc);
+    return row;
+  }));
+
+  // per-chart stats lines
+  const statLine = {
+    heart_rate: S.hrAll.length ? `${S.hrRel.length} reliable s · ${S.hrAll.length - S.hrRel.length} provisional s · ${S.n - S.hrAll.length} s without a reading` : "",
+    breathing_rate: S.br.length ? `${S.br.length} s with a reading · ${S.n - S.br.length} s without` : "",
+    blink_rate: S.blink.length ? `${S.blinkFull.length} s counted over a full 60 s · ${S.blink.length - S.blinkFull.length} s provisional` : "",
+  };
+  for (const el of document.querySelectorAll("[data-stats]")) el.textContent = statLine[el.dataset.stats] || "";
+
+  $("findings").replaceChildren(...findings(S, b).map(([cls, html]) => {
+    const li = document.createElement("li");
+    li.className = cls;
+    // findings are built from numbers and fixed words only; <b> marks the lead phrase
+    const [lead, rest] = html;
+    const strong = document.createElement("b"); strong.textContent = lead;
+    li.append(strong, document.createTextNode(" " + rest));
+    return li;
+  }));
 
   const moments = [
     ...app.events.map((e) => ({ t: e.t, node: momentItem("elevated", "Shifted from your baseline", e.reasons, mmss(e.t)) })),
     ...app.exercises.map((x) => ({ t: x.t, node: momentItem("exercise", "Breathing exercise", [`Heart rate ${x.hr}`, `Breathing ${x.br}`], mmss(x.t)) })),
-  ].sort((a, b) => a.t - b.t);
+  ].sort((a, b2) => a.t - b2.t);
   $("sum-events").replaceChildren(...moments.map((m) => m.node));
   $("sum-events-empty").hidden = moments.length > 0;
+  renderCharts();
+}
+
+// A horizontal strip of runs, one cell per sample.
+function stripInto(el, kinds) {
+  el.replaceChildren();
+  let prev = null, count = 0;
+  const push = () => { if (prev !== null) { const i = document.createElement("i"); i.className = prev; i.style.flexGrow = String(count); el.appendChild(i); } };
+  for (const k of kinds) {
+    if (k !== prev) { push(); prev = k; count = 0; }
+    count++;
+  }
+  push();
+}
+
+// Plain statements derived only from this session's numbers. No diagnosis, no guesses.
+function findings(S, b) {
+  const out = [];
+  if (!S.n) return [["", ["No readings.", "The session ended before any measurement arrived."]]];
+  const relShare = S.hrRel.length / S.n;
+  if (S.hrRel.length) {
+    out.push([relShare >= 0.6 ? "ok" : "warn", ["Heart rate", `was reliable for ${pctText(S.hrRel.length, S.n)} of the session, averaging ${S.hrMean.toFixed(0)} bpm.`]]);
+  } else if (S.hrAll.length) {
+    out.push(["bad", ["Heart rate", `was never reliable: the heart signal stayed below its 0.50 pass line${S.qMean !== null ? ` (mean ${S.qMean.toFixed(2)})` : ""}. Even light from the front usually helps.`]]);
+  } else out.push(["bad", ["Heart rate", "was not measured."]]);
+  if (S.hrAll.length > S.hrRel.length && S.hrRel.length) {
+    out.push(["warn", ["Weak-signal seconds", `(${S.hrAll.length - S.hrRel.length} s) are drawn dotted and left out of the average.`]]);
+  }
+  if (S.br.length) out.push(["ok", ["Breathing", `was measured for ${pctText(S.br.length, S.n)} of the session, averaging ${S.brMean.toFixed(1)} breaths/min.`]]);
+  else out.push([app.quick ? "warn" : "bad", ["Breathing", app.quick ? "needs 20 s of steady signal; none passed its check in this quick read." : "never passed its quality check (chest motion not clear enough)."]]);
+  if (S.blinkFull.length) out.push(["ok", ["Blinks", `averaged ${S.blinkFullMean.toFixed(0)}/min over full 60 s windows.`]]);
+  else if (S.blinkLast) out.push(["warn", ["Blinks", `≈${S.blinkLast.blink.toFixed(0)}/min, counted over less than 60 s, so provisional.`]]);
+  else out.push(["bad", ["Blinks", "were not counted."]]);
+  if (S.face < S.n) out.push([S.face / S.n >= 0.9 ? "" : "warn", ["Face in view", `for ${pctText(S.face, S.n)} of the session; readings pause while it's missing.`]]);
+  const cmp = [["heart_rate", S.hrMean, 0, "Heart rate", 1.15], ["breathing_rate", S.brMean, 1, "Breathing", 1.25]];
+  for (const [k, mean, dg, label, ratio] of cmp) {
+    if (b[k] != null && mean !== null) {
+      const diff = ((mean / b[k]) - 1) * 100;
+      out.push([mean > b[k] * ratio ? "warn" : "ok", [`${label} vs baseline:`, `session average ${mean.toFixed(dg)} against a baseline of ${b[k].toFixed(dg)} (${diff >= 0 ? "+" : "−"}${Math.abs(diff).toFixed(0)}%; elevated counts above +${Math.round((ratio - 1) * 100)}%).`]]);
+    }
+  }
+  if (S.judged.length) {
+    out.push([app.events.length ? "warn" : "ok", ["Composure", `was judged for ${S.judged.length} s and was within your baseline ${pctText(S.calm, S.judged.length)} of that time${app.events.length ? `, with ${app.events.length} elevated moment${app.events.length === 1 ? "" : "s"}` : ""}.`]]);
+  } else {
+    out.push(["", ["Composure", app.quick ? "is not available in a 45 s quick read: baselines need longer." : "was not judged: it needs at least two measurements with a ready baseline."]]);
+  }
+  return out;
 }
 
 // ================================================================ polling
@@ -1246,9 +1218,25 @@ function setStatus(d, age) {
   el.querySelector("span").textContent = text;
 }
 
-function showBanner(text, reconnect) {
+// One row of session history per fresh reading. Every report chart and statistic
+// is computed from these rows; each keeps its own reliability so nothing is upgraded.
+function historySample(d) {
+  const st = metricStatus(d);
+  return {
+    t: sessionSec(),
+    face: !!d.face_found,
+    hr: d.heart_rate, hrState: st.heart.state,
+    q: d.signal_quality ?? null,
+    br: d.breathing_rate,
+    blink: d.blink_rate, blinkFull: st.blink.state === "reliable",
+    state: d.composure.state,
+  };
+}
+
+function showBanner(text, reconnect, tone) {
   $("banner-text").textContent = text || "";
   $("banner").hidden = !text;
+  $("banner").classList.toggle("info", tone === "info");
   $("btn-reconnect").hidden = !reconnect || app.source !== "browser";
 }
 
@@ -1258,10 +1246,15 @@ async function poll() {
   let d;
   try {
     const r = await fetch("/api/readings", { cache: "no-store" });
-    if (!r.ok) throw new Error(`HTTP ${r.status}`);
-    d = await r.json();
+    if (r.status === 401) d = null;
+    else if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    else d = await r.json();
   } catch (e) {
     showBanner("Can't reach the CUORE server. Is server.py still running?");
+    return;
+  }
+  if (d === null) {                           // 401: the server restarted with a new pairing code
+    showBanner("This device is no longer paired (the server restarted). End the session and pair again.");
     return;
   }
   if (!d.session || d.session.id !== app.sessionId) return;   // readings from another session
@@ -1270,25 +1263,21 @@ async function poll() {
 
   if (app.cameraLost) showBanner("The camera stopped. Readings are paused until it's back.", true);
   else if (d.error) showBanner(`Processing stopped: ${d.error}`);
+  else if (pausedForBackground) { /* keep the pause message until frames resume */ }
   else if (app.source === "browser" && app.frameErrors > 5) showBanner("Camera frames aren't reaching the server.");
   else showBanner("");
 
   const age = d.updated_at === null ? null : d.server_time - d.updated_at;
-  if (age !== null && age <= STALE_SEC) {
-    app.history.push({
-      t: (Date.now() - app.sessionStart) / 1000,
-      hr: d.heart_rate, br: d.breathing_rate, blink: d.blink_rate,
-      state: d.composure.state,
-    });
-  }
+  if (age !== null && age <= STALE_SEC) app.history.push(historySample(d));
+  updateQuick();
+  if (app.sessionEnded) return;
 
   if (app.screen === "calibrate") { renderCalibration(d); return; }
   setStatus(d, age);
-  $("pill-time").textContent = mmss((Date.now() - app.sessionStart) / 1000);
-  if (app.style === "living") renderLiveC(d); else renderLive(d);
+  $("pill-time").textContent = mmss(sessionSec());
+  renderLive(d);
   updateNotice(d);
   updateBreatheLive(d);
-  if (app.view === "live") renderCharts();
   if (app.view === "summary") renderSummary();
 }
 
@@ -1314,8 +1303,8 @@ function openBreathe() {
   if ($("breathe").hidden) openDialog($("breathe"), $("btn-breathe-close"));
   const d = app.last;
   breathe = { startHr: d ? d.heart_rate : null, startBr: d ? d.breathing_rate : null, t0: null, timeouts: [], ticker: null };
-  $("br-hr-start").textContent = `at start ${fmt(breathe.startHr, 0)}`;
-  $("br-br-start").textContent = `at start ${fmt(breathe.startBr, 1)}`;
+  $("br-hr-start").textContent = `At start ${fmt(breathe.startHr, 0)}`;
+  $("br-br-start").textContent = `At start ${fmt(breathe.startBr, 1)}`;
   updateBreatheLive(d);
 
   const orb = $("orb");
@@ -1326,7 +1315,6 @@ function openBreathe() {
   $("orb-text").textContent = `Starting in ${n}`;
   breathe.ticker = setInterval(() => { n--; if (n > 0) $("orb-text").textContent = `Starting in ${n}`; }, 1000);
   breathe.timeouts.push(setTimeout(beginBreathing, PACE.prepMs));
-  startField();
 }
 
 function beginBreathing() {
@@ -1339,8 +1327,6 @@ function beginBreathing() {
     orb.style.transitionDuration = ms / 1000 + "s";
     orb.classList.toggle("in", inhale);
     $("orb-text").textContent = inhale ? "Breathe in" : "Breathe out";
-    // reduced motion: one still frame per phase, showing where this breath ends
-    if (app.style === "living" && app.reduceMotion) drawField(Date.now() + (inhale ? PACE.inMs : PACE.outMs));
     breathe.timeouts.push(setTimeout(() => phase(!inhale), ms));
   };
   phase(true);
@@ -1365,7 +1351,6 @@ function compareText(start, end, digits, unit) {
 
 function finishBreathing() {
   clearBreatheTimers();
-  stopField();
   const endSec = (Date.now() - app.sessionStart) / 1000;
   const recent = app.history.filter((s) => s.t >= endSec - PACE.endWindowSec);
   const hr = compareText(breathe.startHr, meanOf(recent.map((s) => s.hr)), 0, "bpm");
@@ -1380,7 +1365,6 @@ function finishBreathing() {
 
 function closeBreathe() {
   clearBreatheTimers();
-  stopField();
   breathe = null;
   $("orb").classList.remove("in");
   if (!$("breathe").hidden) closeDialog($("breathe"));
@@ -1391,104 +1375,6 @@ function updateBreatheLive(d) {
   $("br-hr").textContent = fmt(d.heart_rate, 0);
   $("br-br").textContent = fmt(d.breathing_rate, 1);
   sparkline($("br-wave"), d.breath_wave);   // the measured breathing wave, shown apart from the guide
-}
-
-// ================================================================ C · Breath Field
-// The guide: layered contour forms that inflate over 4 s and settle over 6 s, timed
-// from the exercise clock (breathe.t0), never from your measured breathing. A few
-// slow motes add depth. One canvas, at most 30 fps, running only while open.
-
-const field = { raf: 0, last: 0, motes: [], colors: null };
-
-function guidePhase(now) {
-  if (!breathe || breathe.t0 === null) return { expansion: 0.18, inhale: null, frac: 0 };
-  const pos = (now - breathe.t0) % (PACE.inMs + PACE.outMs);
-  const inhale = pos < PACE.inMs;
-  const frac = inhale ? pos / PACE.inMs : (pos - PACE.inMs) / PACE.outMs;
-  const eased = 0.5 - 0.5 * Math.cos(Math.PI * frac);
-  return { expansion: inhale ? eased : 1 - eased, inhale, frac };
-}
-
-function fieldColors() {
-  const cs = getComputedStyle(document.body);
-  return { a: cs.getPropertyValue("--breath").trim() || "#5a8cf2", b: cs.getPropertyValue("--heart").trim() || "#ec5a68", dark: document.body.classList.contains("mode-dark") };
-}
-
-function hexA(hex, a) {
-  const h = hex.replace("#", "");
-  const n = parseInt(h.length === 3 ? h.split("").map((c) => c + c).join("") : h, 16);
-  return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${a})`;
-}
-
-function drawField(now) {
-  const canvas = $("breath-canvas"), ctx2 = canvas.getContext("2d");
-  const dpr = Math.min(2, window.devicePixelRatio || 1);
-  const w = canvas.clientWidth, h = canvas.clientHeight;
-  if (!w || !h) return;
-  if (canvas.width !== Math.round(w * dpr)) { canvas.width = Math.round(w * dpr); canvas.height = Math.round(h * dpr); }
-  const { expansion, frac, inhale } = guidePhase(now);
-  const c = field.colors;
-  ctx2.setTransform(dpr, 0, 0, dpr, 0, 0);
-  ctx2.clearRect(0, 0, w, h);
-  ctx2.globalCompositeOperation = c.dark ? "lighter" : "source-over";
-  const cx = w / 2, cy = h / 2, R = Math.min(w, h) * 0.3, s = 0.6 + 0.4 * expansion;
-  const t = app.reduceMotion ? 0 : now;
-  for (let k = 0; k < 6; k++) {
-    const rk = R * s * (1 - k * 0.12);
-    ctx2.beginPath();
-    for (let i = 0; i <= 96; i++) {
-      const th = (i / 96) * Math.PI * 2;
-      const r = rk * (1 + 0.03 * Math.sin(3 * th + t * 0.00035 + k * 1.3) + 0.018 * Math.sin(5 * th - t * 0.00026 + k * 0.7) + 0.01 * Math.sin(2 * th + t * 0.0002 * (k + 1)));
-      const x = cx + r * Math.cos(th), y = cy + r * Math.sin(th);
-      i ? ctx2.lineTo(x, y) : ctx2.moveTo(x, y);
-    }
-    ctx2.closePath();
-    const g = ctx2.createRadialGradient(cx, cy - rk * 0.2, rk * 0.05, cx, cy, rk);
-    const col = k % 2 ? c.b : c.a;
-    g.addColorStop(0, hexA(col, c.dark ? 0.22 : 0.1));
-    g.addColorStop(1, hexA(col, 0));
-    ctx2.fillStyle = g;
-    ctx2.fill();
-    ctx2.lineWidth = 1;
-    ctx2.strokeStyle = hexA(c.a, c.dark ? 0.42 - k * 0.04 : 0.42 - k * 0.04);
-    ctx2.stroke();
-  }
-  if (!app.reduceMotion) {
-    for (const m of field.motes) {
-      m.a += m.v;
-      const r = R * s * m.d;
-      ctx2.beginPath();
-      ctx2.arc(cx + r * Math.cos(m.a), cy + r * Math.sin(m.a), m.size, 0, Math.PI * 2);
-      ctx2.fillStyle = hexA(c.a, c.dark ? 0.5 : 0.35);
-      ctx2.fill();
-    }
-  }
-  ctx2.globalCompositeOperation = "source-over";
-  // the guide ring shows how far through the current breath the guide is
-  const arc = $("guide-arc");
-  arc.style.strokeDashoffset = String(603.2 * (1 - (inhale === null ? 0 : frac)));
-  arc.classList.toggle("out", inhale === false);
-}
-
-function fieldLoop(now) {
-  if ($("breathe").hidden || app.style !== "living" || !breathe) { field.raf = 0; return; }
-  if (now - field.last >= 33) { field.last = now; drawField(Date.now()); }
-  field.raf = requestAnimationFrame(fieldLoop);
-}
-
-function startField() {
-  if (app.style !== "living") return;
-  field.colors = fieldColors();
-  if (!field.motes.length) {
-    for (let i = 0; i < 22; i++) field.motes.push({ a: Math.random() * Math.PI * 2, d: 1.05 + Math.random() * 0.4, v: (Math.random() - 0.5) * 0.004, size: 0.8 + Math.random() * 1.2 });
-  }
-  if (app.reduceMotion) { drawField(Date.now()); return; }   // static frames only, redrawn at each phase change
-  if (!field.raf) field.raf = requestAnimationFrame(fieldLoop);
-}
-
-function stopField() {
-  if (field.raf) cancelAnimationFrame(field.raf);
-  field.raf = 0;
 }
 
 // ================================================================ diagnostics (?diag)
@@ -1509,7 +1395,7 @@ function diagRow(d) {
   const t = app.sessionStart ? (Date.now() - app.sessionStart) / 1000 : 0;
   const bl = (k) => (bm[k] ? (bm[k].ready ? "ready" : `${Math.floor(bm[k].valid_sec || 0)}/${bm[k].need_valid_sec}s valid`) : "--");
   return {
-    t: +t.toFixed(1), condition: $("diag-cond").value.trim(), style: app.style, source: app.source,
+    t: +t.toFixed(1), condition: $("diag-cond").value.trim(), quick: app.quick ? 1 : 0, source: app.source,
     jpeg: TEST.jpeg, inflight: TEST.inflight, cam_lock: camLock.state,
     camera_fps: d.camera_fps, upload_fps: uploadFps(), upload_rtt_ms: upload.rtt, processed_fps: d.processed_fps,
     frame_latency_ms: dg.frame_latency_ms ?? null, frames_dropped: dg.frames_dropped ?? null,
@@ -1545,7 +1431,7 @@ function renderDiag(d) {
     ["baseline heart / breath / blink", `${row.baseline_heart} / ${row.baseline_breath} / ${row.baseline_blink}`],
     ["composure", `${row.composure || "--"}${row.composure_used ? ` (${row.composure_used})` : ""}`],
   ];
-  $("diag-list").replaceChildren(...items.flatMap(([k, v]) => { const dt = document.createElement("dt"), dd = document.createElement("dd"); dt.textContent = k; dd.textContent = v; return [dt, dd]; }));
+  $("diag-list").replaceChildren(...items.flatMap(([k, v]) => { const dt = document.createElement("dt"), dd = document.createElement("dd"); dt.textContent = cap(k); dd.textContent = v; return [dt, dd]; }));
 
   const n = diag.rows.length;
   const mean = (k) => { const v = diag.rows.map((r) => r[k]).filter((x) => x !== null && x !== undefined); return v.length ? v.reduce((a, b) => a + b, 0) / v.length : null; };
@@ -1558,7 +1444,7 @@ function renderDiag(d) {
     ["breathing available", pct(count((r) => r.breathing_rate !== null), n)], ["blink rate available", pct(count((r) => r.blink_rate !== null), n)],
     ["face found", pct(count((r) => r.face_found), n)], ["mean heart quality", num(mean("heart_quality"), 2)], ["mean processed fps", num(mean("processed_fps"), 1)],
   ];
-  $("diag-stats").replaceChildren(...diag.stats.flatMap(([k, v]) => { const a = document.createElement("span"), b = document.createElement("span"); a.textContent = k; b.textContent = v; return [a, b]; }));
+  $("diag-stats").replaceChildren(...diag.stats.flatMap(([k, v]) => { const a = document.createElement("span"), b = document.createElement("span"); a.textContent = cap(k); b.textContent = v; return [a, b]; }));
 }
 
 // CSV cell: always quoted; text starting = + - @ is prefixed so spreadsheets never run it as a formula
@@ -1602,18 +1488,8 @@ function closeFull() {
 
 document.addEventListener("DOMContentLoaded", () => {
   buildStatic();
-  buildDial();
-  applyStyle("nocturne");
+  mountHearts();
 
-  $("mode-btn").addEventListener("click", () => {
-    app.mode = app.mode === "dark" ? "light" : "dark";
-    applyStyle("living");
-    if (!$("breathe").hidden) field.colors = fieldColors();
-  });
-  for (const ro of document.querySelectorAll(".ro")) ro.addEventListener("click", () => openDrawer(ro.dataset.metric, ro));
-  $("drawer-close").addEventListener("click", closeDrawer);
-  trapFocus($("drawer"), closeDrawer);
-  $("btn-breathe-c").addEventListener("click", openBreathe);
   window.matchMedia("(prefers-reduced-motion: reduce)").addEventListener("change", (e) => { app.reduceMotion = e.matches; });
 
   if (TEST.diag) {
@@ -1621,7 +1497,7 @@ document.addEventListener("DOMContentLoaded", () => {
     $("diag-csv").addEventListener("click", downloadDiag);
     $("diag-fold").addEventListener("click", () => {
       const folded = $("diag").classList.toggle("folded");
-      $("diag-fold").textContent = folded ? "show" : "hide";
+      $("diag-fold").textContent = folded ? "Show" : "Hide";
       $("diag-fold").setAttribute("aria-expanded", String(!folded));
     });
     $("diag-reset").addEventListener("click", () => { diag.rows = []; diag.first = {}; $("diag-stats").replaceChildren(); });
@@ -1643,7 +1519,6 @@ document.addEventListener("DOMContentLoaded", () => {
     requestAnimationFrame(tick);
   }
 
-  for (const b of document.querySelectorAll(".style-btn")) b.addEventListener("click", () => applyStyle(b.dataset.style));
   $("btn-start").addEventListener("click", onStart);
   $("btn-cancel").addEventListener("click", () => { stopCamera(); showScreen("start"); });
   $("btn-recal").addEventListener("click", async () => {
@@ -1651,8 +1526,13 @@ document.addEventListener("DOMContentLoaded", () => {
     catch (e) { showBanner(`Couldn't restart calibration: ${e.message || e}`); }
   });
   $("btn-end").addEventListener("click", endSession);
-  $("btn-new").addEventListener("click", async () => {
-    try { await begin(); } catch (e) { showBanner(cameraError(e)); }
+  // a new session starts from the start screen, so the length can be chosen again
+  $("btn-new").addEventListener("click", () => { app.sessionStart = null; showScreen("start"); });
+  $("btn-to-summary").addEventListener("click", () => showView("summary"));
+  // Leaving mid-session (logo, back button, closing the tab) asks first: the
+  // session's history lives only in this page and would be lost.
+  window.addEventListener("beforeunload", (e) => {
+    if (app.screen !== "start" && app.sessionStart && !app.sessionEnded) { e.preventDefault(); e.returnValue = ""; }
   });
   $("btn-back").addEventListener("click", () => showView("live"));
   $("btn-reconnect").addEventListener("click", reconnectCamera);
@@ -1668,7 +1548,6 @@ document.addEventListener("DOMContentLoaded", () => {
     showView(next.dataset.view, true);
   });
 
-  for (const btn of document.querySelectorAll(".toggle")) btn.addEventListener("click", () => toggleGraph(btn));
   for (const wrap of document.querySelectorAll(".chart-wrap")) {
     const svgEl = wrap.querySelector(".chart"), tip = wrap.querySelector(".tip-box");
     wrap.addEventListener("pointermove", (e) => { wrap.__pointer = { clientX: e.clientX }; chartHover(svgEl, tip, e); });
@@ -1698,8 +1577,14 @@ document.addEventListener("DOMContentLoaded", () => {
   $("notif-panel").addEventListener("click", (e) => e.stopPropagation());
   document.addEventListener("click", () => { $("notif-panel").hidden = true; $("btn-bell").setAttribute("aria-expanded", "false"); });
   $("btn-clear").addEventListener("click", () => { $("notif-list").replaceChildren(); $("notif-empty").hidden = false; });
-  window.addEventListener("resize", () => { if (app.view === "live") renderCharts(); });
+  window.addEventListener("resize", () => renderCharts());
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) pauseForBackground("Paused while CUORE was in the background. Readings resume when you come back.");
+    else resumeFromBackground();
+  });
 
+  $("pair-form").addEventListener("submit", (e) => { e.preventDefault(); pairDevice($("pair-code").value); });
   showScreen("start");
+  checkPairing();
   setInterval(poll, POLL_MS);
 });
