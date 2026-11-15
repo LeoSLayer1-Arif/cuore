@@ -61,7 +61,7 @@ Keep the app window off that region, or it will capture its own overlay. Video c
 
 ## Checking accuracy
 
-Buy a fingertip pulse oximeter (about $15) and wear it while the app runs. After about 10 seconds the two numbers should be within roughly 5 BPM.
+Buy a fingertip pulse oximeter (about $15) and wear it while the app runs. After about 10 seconds the two numbers should be within roughly 3 BPM.
 
 ## Troubleshooting
 
