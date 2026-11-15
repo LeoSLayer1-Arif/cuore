@@ -4,4 +4,5 @@ numpy
 scipy
 mss
 open-rppg
+flask
 setuptools<81
