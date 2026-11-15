@@ -58,85 +58,125 @@ BREATH_HIGH_RATIO = 1.25
 HR_HIGH_RATIO = 1.15
 
 
-class Baseline:
-    """Running mean of blink, breathing and heart rate over the first 60 s of good signal.
+BASELINE_MIN_VALID_SEC = 30.0   # coverage: at least this many seconds of valid readings
+TICK_SEC = 0.5                  # one baseline sample per vitals update (app.UPDATE_EVERY_SEC)
+METRICS = ("heart", "breath", "blink")
 
-    Samples are taken once per vitals update (every 0.5 s), only while the
-    signal status is "good", and only for values that exist (not None). The
-    60 s clock starts at the first good update. If a metric still has no
-    sample after 60 s, collection continues until all three have at least
-    one, so the baseline never contains a guess.
+
+class MetricBaseline:
+    """Baseline for ONE measurement: the mean of its own valid readings.
+
+    A sample is offered every vitals update (0.5 s); `value` is None when this
+    measurement's own validity rule fails at that moment (the caller decides
+    validity, using the existing per-measurement rules). Ready only when BOTH:
+      - at least BASELINE_SEC (60 s) have passed since its first valid reading, and
+      - at least BASELINE_MIN_VALID_SEC (30 s) of valid readings were collected,
+    so elapsed time alone never makes a baseline ready.
     """
 
     def __init__(self):
         self.start = None
-        self.sums = {"blink": 0.0, "breath": 0.0, "heart": 0.0}
-        self.counts = {"blink": 0, "breath": 0, "heart": 0}
+        self.total = 0.0
+        self.count = 0
         self.ready = False
+        self.last_now = None
 
-    def add(self, now, status, blink, breath, heart):
-        if self.ready or status != "good":
+    def add(self, now, value):
+        self.last_now = now
+        if self.ready:
             return
-        if self.start is None:
-            self.start = now
-        for key, value in (("blink", blink), ("breath", breath), ("heart", heart)):
-            if value is not None:
-                self.sums[key] += value
-                self.counts[key] += 1
-        if now - self.start >= BASELINE_SEC and all(self.counts.values()):
+        if value is not None:
+            if self.start is None:
+                self.start = now
+            self.total += value
+            self.count += 1
+        if (self.start is not None and now - self.start >= BASELINE_SEC
+                and self.valid_sec() >= BASELINE_MIN_VALID_SEC):
             self.ready = True
 
+    def valid_sec(self):
+        return self.count * TICK_SEC
+
+    def elapsed_sec(self):
+        return 0.0 if self.start is None or self.last_now is None else self.last_now - self.start
+
+    def mean(self):
+        """The baseline value, only once it is ready."""
+        return self.total / self.count if self.ready and self.count else None
+
+    def report(self):
+        return {"ready": self.ready, "value": _num(self.mean()),
+                "valid_sec": _num(self.valid_sec()), "elapsed_sec": _num(self.elapsed_sec()),
+                "need_valid_sec": BASELINE_MIN_VALID_SEC, "need_elapsed_sec": BASELINE_SEC}
+
+
+class Baseline:
+    """Independent baselines for heart rate, breathing and blinks.
+
+    A weak heart signal no longer blocks the breathing or blink baselines; each
+    one learns from its own valid readings and becomes ready on its own.
+    """
+
+    def __init__(self):
+        self.metrics = {key: MetricBaseline() for key in METRICS}
+
+    def add(self, now, heart, breath, blink):
+        """Each value is None unless that measurement passed its own validity rule."""
+        for key, value in (("heart", heart), ("breath", breath), ("blink", blink)):
+            self.metrics[key].add(now, value)
+
+    @property
+    def ready(self):          # all three ready (kept for the A/B views and old readers)
+        return all(m.ready for m in self.metrics.values())
+
     def mean(self, key):
-        return self.sums[key] / self.counts[key] if self.counts[key] else None
+        return self.metrics[key].mean()
 
     def missing(self):
-        """Metrics with no baseline sample yet: any of "blink", "breath", "heart"."""
-        return [key for key, count in self.counts.items() if count == 0]
+        return [key for key, m in self.metrics.items() if not m.ready]
 
     def seconds_collected(self, now):
-        return None if self.start is None else min(BASELINE_SEC, now - self.start)
+        started = [now - m.start for m in self.metrics.values() if m.start is not None]
+        return min(BASELINE_SEC, max(started)) if started else None
 
 
-def evaluate_composure(baseline_ready, base_blink, base_breath, base_heart,
-                       blink, breath, heart):
-    """Compare current readings to the baseline. All the rules live here.
+def evaluate_composure(base_blink, base_breath, base_heart, blink, breath, heart):
+    """Compare current readings to whichever baselines are ready. All the rules live here.
 
-    Each flag is True/False when the current reading exists, or None when it
-    is missing (we can't say either way). blink_low needs both: below 60% of
-    baseline and at least BLINK_MIN_DROP blinks/min lower. If the blink
-    baseline is under BLINK_MIN_DROP, a drop that size is impossible, so
-    blink_low is None ("can't tell") and blink_baseline_too_low is True. Rule:
-      - "elevated" if blink_low is True on its own (blink is the most reliable
-        signal, so it counts double), or if at least two of the three are True
-      - "calm" otherwise
-      - "calibrating" before the baseline is ready
-      - None if there are no current readings at all to compare
+    Thresholds are unchanged. A flag is True/False only when that measurement's
+    baseline is ready AND it has a current reading; otherwise it is None (can't
+    tell) and the measurement is not used. blink_low needs both: below 60 % of
+    baseline and at least BLINK_MIN_DROP blinks/min lower; with a blink baseline
+    under BLINK_MIN_DROP it is None and blink_baseline_too_low is True. Rule:
+      - "calibrating"  no baseline is ready yet
+      - "elevated"     blink_low is True on its own, or at least two flags are True
+      - "calm"         otherwise, but only when at least two measurements were compared
+      - "insufficient" otherwise: fewer than two measurements could be compared
+    `used` lists the measurements that were compared.
     """
-    if not baseline_ready:
+    if base_blink is None and base_breath is None and base_heart is None:
         return {"state": "calibrating", "blink_low": None, "breath_high": None, "hr_high": None,
-                "blink_baseline_too_low": False}
+                "blink_baseline_too_low": False, "used": []}
 
-    def compare(current, check):
-        return None if current is None else bool(check(current))
+    def compare(base, current, check):
+        return None if base is None or current is None else bool(check(current, base))
 
-    blink_baseline_too_low = base_blink < BLINK_MIN_DROP
-    if blink_baseline_too_low:
-        blink_low = None
-    else:
-        blink_low = compare(blink, lambda v: v < BLINK_LOW_RATIO * base_blink
-                            and base_blink - v >= BLINK_MIN_DROP)
-    breath_high = compare(breath, lambda v: v > BREATH_HIGH_RATIO * base_breath)
-    hr_high = compare(heart, lambda v: v > HR_HIGH_RATIO * base_heart)
+    blink_baseline_too_low = base_blink is not None and base_blink < BLINK_MIN_DROP
+    blink_low = None if blink_baseline_too_low else compare(
+        base_blink, blink, lambda v, b: v < BLINK_LOW_RATIO * b and b - v >= BLINK_MIN_DROP)
+    breath_high = compare(base_breath, breath, lambda v, b: v > BREATH_HIGH_RATIO * b)
+    hr_high = compare(base_heart, heart, lambda v, b: v > HR_HIGH_RATIO * b)
 
-    flags = (blink_low, breath_high, hr_high)
-    if all(f is None for f in flags):
-        state = None
-    elif blink_low is True or sum(f is True for f in flags) >= 2:
+    flags = {"blink": blink_low, "breath": breath_high, "heart": hr_high}
+    used = [key for key in ("heart", "breath", "blink") if flags[key] is not None]
+    if blink_low is True or sum(f is True for f in flags.values()) >= 2:
         state = "elevated"
-    else:
+    elif len(used) >= 2:
         state = "calm"
+    else:
+        state = "insufficient"
     return {"state": state, "blink_low": blink_low, "breath_high": breath_high, "hr_high": hr_high,
-            "blink_baseline_too_low": blink_baseline_too_low}
+            "blink_baseline_too_low": blink_baseline_too_low, "used": used}
 
 
 # --------------------------------------------------------------------------
@@ -189,9 +229,11 @@ def default_readings(source, session_id):
         "average_heart_rate": None,
         "pulse_wave": None,
         "breath_wave": None,
-        "composure": evaluate_composure(False, None, None, None, None, None, None),
-        "baseline": {"ready": False, "seconds_collected": None, "waiting_for": None,
-                     "blink_rate": None, "breathing_rate": None, "heart_rate": None},
+        "composure": evaluate_composure(None, None, None, None, None, None),
+        "baseline": {"ready": False, "seconds_collected": None, "waiting_for": list(METRICS),
+                     "blink_rate": None, "breathing_rate": None, "heart_rate": None,
+                     "metrics": {key: MetricBaseline().report() for key in METRICS}},
+        "diag": None,
         "updated_at": None,
     }
 
@@ -271,6 +313,7 @@ class BrowserSource:
         self.session_id = None
         self.offset = 0.0
         self.last_timestamp = -math.inf
+        self.dropped = 0          # frames rejected for arriving out of capture order (diagnostics)
 
     def push(self, frame, capture_time, session_id):
         with self.new_frame:
@@ -279,6 +322,7 @@ class BrowserSource:
                 self.offset = time.monotonic() - capture_time
             t = capture_time + self.offset
             if t <= self.last_timestamp:
+                self.dropped += 1
                 return False
             self.last_timestamp = t
             self.frame = frame
@@ -350,6 +394,8 @@ class Session:
         self.last_face_time = -1e9
         self.processed_times = deque(maxlen=60)
         self.bpm = self.resp_rate = self.blink_rate = None
+        self.face_ticks = deque()      # (time, face found) per vitals update, last 60 s (diagnostics)
+        self.latency_ms = None         # capture → published result, smoothed (diagnostics)
 
 
 def processing_loop(args, shared, stop, source):
@@ -513,14 +559,29 @@ def processing_loop(args, shared, stop, source):
             blink_window_full = (s.blinks.start is not None
                                  and now - s.blinks.start >= s.blinks.window_sec)
             if ticked:
-                s.baseline.add(now, status_code, blink_rate if blink_window_full else None,
-                               resp_rate, live_bpm)
+                # Each baseline takes a sample only when ITS OWN existing validity rule passes:
+                #   heart:  a live reading with the heart signal "good" (unchanged rule)
+                #   breath: the breathing estimator produced a rate (its own 20 s + confidence
+                #           checks), with a face in view; no longer blocked by a weak heart signal
+                #   blink:  a full 60 s blink window with a face in view (unchanged rule)
+                s.baseline.add(
+                    now,
+                    heart=live_bpm if status_code == "good" else None,
+                    breath=resp_rate if (resp_rate is not None and face_found) else None,
+                    blink=blink_rate if (blink_window_full and face_found) else None,
+                )
+                s.face_ticks.append((now, face_found))
+                while s.face_ticks and now - s.face_ticks[0][0] > 60.0:
+                    s.face_ticks.popleft()
             composure = evaluate_composure(
-                s.baseline.ready, s.baseline.mean("blink"), s.baseline.mean("breath"),
-                s.baseline.mean("heart"), blink_rate, resp_rate, live_bpm)
+                s.baseline.mean("blink"), s.baseline.mean("breath"), s.baseline.mean("heart"),
+                blink_rate, resp_rate, live_bpm)
 
             if shared.current_session() != s.id:
                 continue          # a new session started mid-frame; don't publish stale values
+            latency = (time.monotonic() - arrived) * 1000.0     # capture → this result
+            s.latency_ms = latency if s.latency_ms is None else s.latency_ms * 0.8 + latency * 0.2
+            face_ratio = (sum(1 for _, f in s.face_ticks if f) / len(s.face_ticks)) if s.face_ticks else None
             shared.set_readings(
                 session={"id": s.id, "source": args.source},
                 heart_rate=_num(live_bpm),
@@ -553,7 +614,18 @@ def processing_loop(args, shared, stop, source):
                           "waiting_for": s.baseline.missing(),
                           "blink_rate": _num(s.baseline.mean("blink")),
                           "breathing_rate": _num(s.baseline.mean("breath")),
-                          "heart_rate": _num(s.baseline.mean("heart"))},
+                          "heart_rate": _num(s.baseline.mean("heart")),
+                          "metrics": {k: m.report() for k, m in s.baseline.metrics.items()}},
+                # Read-only diagnostics. breathing_snr_db is the confidence of the most
+                # recent ACCEPTED breathing estimate (the estimator keeps it until the next one).
+                diag={
+                    "breathing_snr_db": _num(s.breathing.snr_db) if resp_rate is not None else None,
+                    "breathing_buffer_sec": _num(s.breathing.buffer.duration()),
+                    "blink_window_sec": _num(min(s.blinks.window_sec, now - s.blinks.start)) if s.blinks.start is not None else None,
+                    "face_ratio_60s": _num(face_ratio),
+                    "frame_latency_ms": _num(s.latency_ms),
+                    "frames_dropped": getattr(source, "dropped", None),
+                },
                 updated_at=time.monotonic(),
             )
     except BaseException as exc:   # includes SystemExit from CameraSource / RppgHeartRate
