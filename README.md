@@ -13,6 +13,17 @@ Camera-based heart rate, breathing rate, blink rate and a heuristic stress score
 | `test_vitals.py` | Synthetic-signal checks for `vitals.py` |
 | `requirements.txt` | Dependencies |
 
+## Website
+
+`server.py` serves a website (FastAPI) that shows the same measurements in the browser.
+
+```bash
+pip install -r requirements.txt
+python server.py                # open http://127.0.0.1:8000
+```
+
+Click **Start Calibrating** on the home page. The camera opens, a 10 second calibration runs, then the 1 minute average is recorded. The dashboard shows live BPM, the pulse wave, the average BPM, a camera preview, breathing rate and blink rate. It accepts the same camera options as `app.py` (`--camera`, `--hr`, `--rppg-model`, `--avg-seconds`, `--screen`) plus `--host` and `--port`. Frontend files are in `web/`.
+
 ## How it works
 
 1. **Find the face.** MediaPipe Face Landmarker places 478 points on the face in every frame.

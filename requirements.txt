@@ -5,3 +5,5 @@ scipy
 mss
 open-rppg
 setuptools<81
+fastapi
+uvicorn

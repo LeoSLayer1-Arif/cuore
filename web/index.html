@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Cuore | Contactless vitals</title>
+  <link rel="icon" href="/static/logo.svg">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div class="bg-glow" aria-hidden="true"></div>
+
+  <!-- ============ HOME ============ -->
+  <section id="home" class="view active">
+    <header class="topbar">
+      <a class="brand" href="/"><img src="/static/logo.svg" alt=""><span>CUORE</span></a>
+      <nav class="pills">
+        <span class="pill dark">Home</span>
+        <span class="pill">How it works</span>
+        <span class="pill">Privacy</span>
+      </nav>
+      <span class="spacer"></span>
+    </header>
+
+    <main class="hero">
+      <div class="hero-copy">
+        <span class="eyebrow">Contactless vital signs</span>
+        <h1>Measure your heart rate with just your webcam.</h1>
+        <p>Cuore reads the tiny colour changes that blood flow causes in your face. Sit still for about a minute and get your average heart rate, with breathing and blink rate alongside.</p>
+        <div class="hero-actions">
+          <button id="btn-start" class="btn primary">Start Calibrating</button>
+          <span class="muted small">Camera opens only after you click.</span>
+        </div>
+        <p id="home-error" class="error-text" hidden></p>
+      </div>
+
+      <ol class="steps card">
+        <li><b>1</b><div><h3>Get ready</h3><p>Face a window or lamp. Avoid strong light behind you.</p></div></li>
+        <li><b>2</b><div><h3>Calibrate, 10 s</h3><p>Hold still while the signal settles.</p></div></li>
+        <li><b>3</b><div><h3>Measure, 1 min</h3><p>Your average heart rate is recorded and shown at the end.</p></div></li>
+      </ol>
+    </main>
+    <footer class="disclaimer">Cuore is a screening demo, not a medical device. It does not diagnose or treat any condition.</footer>
+  </section>
+
+  <!-- ============ DASHBOARD ============ -->
+  <section id="dash" class="view">
+    <header class="topbar">
+      <a class="brand" href="/"><img src="/static/logo.svg" alt=""><span>CUORE</span></a>
+      <nav class="pills">
+        <span class="pill dark">Dashboard</span>
+      </nav>
+      <span class="spacer"></span>
+      <div class="top-actions">
+        <button id="btn-reset" class="btn ghost">Restart</button>
+        <button id="btn-stop" class="btn ghost danger">Stop</button>
+      </div>
+    </header>
+
+    <h2 class="greeting" id="greeting">Starting the camera…</h2>
+
+    <div class="grid">
+      <!-- Phase / timer -->
+      <article class="card phase" id="card-phase">
+        <div class="card-head"><h3>Session</h3><span id="signal-chip" class="chip">Waiting</span></div>
+        <div class="phase-body">
+          <div class="ring" id="ring">
+            <svg viewBox="0 0 120 120">
+              <circle class="ring-bg" cx="60" cy="60" r="52"/>
+              <circle class="ring-fg" id="ring-fg" cx="60" cy="60" r="52"/>
+            </svg>
+            <div class="ring-text">
+              <b id="ring-main">--</b>
+              <span id="ring-sub">seconds</span>
+            </div>
+          </div>
+          <div class="phase-info">
+            <div class="stepper">
+              <div class="step" id="step-cal"><i></i><span>Calibration<small>10 s</small></span></div>
+              <div class="step" id="step-meas"><i></i><span>Measuring<small>1 min</small></span></div>
+              <div class="step" id="step-done"><i></i><span>Result</span></div>
+            </div>
+            <p id="phase-msg" class="muted">Starting…</p>
+          </div>
+        </div>
+      </article>
+
+      <!-- Camera -->
+      <article class="card camera">
+        <div class="card-head"><h3>Camera</h3><span class="muted small" id="fps">-- fps</span></div>
+        <div class="video-wrap">
+          <img id="video" alt="Camera preview" hidden>
+          <div id="video-placeholder" class="video-placeholder">Waiting for camera…</div>
+          <div id="video-badge" class="video-badge" hidden></div>
+        </div>
+        <p class="muted small tip">Keep your face inside the frame and as still as you can. Blue outlines show the skin areas being read.</p>
+      </article>
+
+      <!-- Live BPM -->
+      <article class="card live">
+        <div class="card-head"><h3>Live heart rate</h3><span class="heartbeat" id="heartbeat"></span></div>
+        <div class="big"><b id="bpm">--</b><span>BPM</span></div>
+        <canvas id="pulse-canvas" height="110"></canvas>
+        <p class="muted small">Pulse wave, last 6 seconds</p>
+      </article>
+
+      <!-- Average BPM -->
+      <article class="card avg" id="card-avg">
+        <div class="card-head"><h3>Average heart rate</h3><span id="avg-chip" class="chip">Pending</span></div>
+        <div class="big"><b id="avg">--</b><span>BPM</span></div>
+        <div class="bar"><div id="avg-bar"></div></div>
+        <div class="bar-label"><span id="avg-progress">0 s</span><span id="avg-total">of 60 s</span></div>
+        <p id="avg-note" class="muted small">Recording starts after calibration.</p>
+      </article>
+
+      <!-- Secondary -->
+      <article class="card mini breath-card">
+        <div class="card-head"><h3>Breathing rate</h3></div>
+        <div class="big sm"><b id="breath">--</b><span>per min</span></div>
+        <canvas id="breath-canvas" height="70"></canvas>
+      </article>
+
+      <article class="card mini blink-card">
+        <div class="card-head"><h3>Blink rate</h3></div>
+        <div class="big sm"><b id="blinks">--</b><span>per min</span></div>
+        <p class="muted small">Appears after about 10 seconds.</p>
+      </article>
+    </div>
+
+    <footer class="disclaimer">Screening demo, not a medical device. Readings can be affected by light, movement and skin tone.</footer>
+  </section>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
