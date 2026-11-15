@@ -159,13 +159,13 @@ class FakeRppg:
         self.sqi = sqi
 
 
-def test_good_sqi_is_exactly_0_15():
-    assert server.vs.RppgHeartRate.GOOD_SQI == 0.15
+def test_good_sqi_is_exactly_0_22():
+    assert server.vs.RppgHeartRate.GOOD_SQI == 0.22
 
 
 @pytest.mark.parametrize("sqi, expected", [
-    (0.10, "weak"), (0.149, "weak"), (0.150, "weak"),      # SQI <= 0.15: not good
-    (0.151, "good"), (0.20, "good"), (0.50, "good"),      # SQI > 0.15: good
+    (0.10, "weak"), (0.15, "weak"), (0.219, "weak"), (0.220, "weak"),   # SQI <= 0.22: not good
+    (0.221, "good"), (0.30, "good"), (0.50, "good"),                   # SQI > 0.22: good
     (None, "weak"),                                       # no quality reported: not good
 ])
 def test_heart_signal_classification_boundary(sqi, expected):
@@ -174,8 +174,8 @@ def test_heart_signal_classification_boundary(sqi, expected):
 
 
 def test_status_text_keeps_the_real_sqi():
-    _, (text, _) = server.signal_status(True, 72.0, FakeRppg(0.151), None)
-    assert "0.15" in text                                  # reported as measured, never raised
+    _, (text, _) = server.signal_status(True, 72.0, FakeRppg(0.221), None)
+    assert "0.22" in text                                  # reported as measured, never raised
 
 
 def test_no_face_and_measuring_are_unchanged():
@@ -191,10 +191,10 @@ def test_heart_baseline_collects_only_good_seconds():
             code, _ = server.signal_status(True, 70.0, FakeRppg(sqi), None)
             b.add(i * 0.5, 70.0 if code == "good" else None)
         return b
-    assert not run(0.150).ready and run(0.150).valid_sec() == 0
-    assert run(0.151).ready and run(0.151).mean() == 70.0
+    assert not run(0.220).ready and run(0.220).valid_sec() == 0
+    assert run(0.221).ready and run(0.221).mean() == 70.0
 
 
 def test_readings_publish_the_threshold():
     readings = server.SharedState("browser").get_readings()
-    assert readings["signal_quality_threshold"] == 0.15
+    assert readings["signal_quality_threshold"] == 0.22

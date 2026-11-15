@@ -501,7 +501,7 @@ class RppgHeartRate:
     WINDOW_SEC = 10       # heart rate from the last 10 seconds of pulse signal
     WAVE_SEC = 6          # pulse wave shown on screen
     UPDATE_EVERY_SEC = 1.0
-    GOOD_SQI = 0.15       # the library's signal quality index, 0 (noise) to 1 (clean); good only when SQI > 0.15
+    GOOD_SQI = 0.22       # the library's signal quality index, 0 (noise) to 1 (clean); good only when SQI > 0.22
 
     def __init__(self, model_name):
         import rppg                              # only needed in this mode

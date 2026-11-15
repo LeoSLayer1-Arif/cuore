@@ -93,7 +93,7 @@ def main():
     for asset in ASSETS:
         shutil.copy2(os.path.join(WEB, asset), os.path.join(OUT, "static", asset))
     with open(os.path.join(OUT, "CNAME"), "w") as f:
-        f.write(DOMAIN + "\n")                       # GitHub Pages custom domain
+        f.write(DOMAIN)                              # GitHub Pages custom domain (no newline, as GitHub writes it)
     open(os.path.join(OUT, ".nojekyll"), "w").close()  # serve files as they are
     open(os.path.join(OUT, MARKER), "w").close()
     print(f"Built {len(pages)} pages and {len(ASSETS)} assets into {OUT} for {DOMAIN}")
