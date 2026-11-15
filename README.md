@@ -10,6 +10,8 @@ Camera-based heart rate, breathing rate, blink rate and a heuristic stress score
 |---|---|
 | `vitals.py` | Signal processing (NumPy/SciPy only, no camera needed) |
 | `app.py` | Camera or screen capture, face tracking, on-screen display |
+| `web.py` | Same pipeline as `app.py`, shown as a dashboard in the browser |
+| `static/` | The browser dashboard (HTML, CSS, JavaScript) |
 | `test_vitals.py` | Synthetic-signal checks for `vitals.py` |
 | `requirements.txt` | Dependencies |
 
@@ -48,6 +50,19 @@ Sit still facing a window or lamp for 30 seconds while it calibrates. Keys: `q` 
 The dashboard shows the live heart rate next to an **average heart rate** card. The first 10 seconds of readings are a calibration period and are left out of the average. After that, the average records one reading per second for 1 minute, pausing while no face or reading is available, then shows the final value until you press `r` (which also restarts calibration). Change the length with `--avg-seconds`, e.g. `python app.py --avg-seconds 90`. The pulse graph is in the top-right corner and the breathing graph along the bottom.
 
 To use an external webcam, pass its index: `python app.py --camera 1` (run `python find_cameras.py` to list cameras).
+
+### Browser dashboard
+
+`web.py` runs the same measurements and shows them in a web page instead of an OpenCV window:
+
+```bash
+python web.py                   # then open http://127.0.0.1:8000
+python web.py --port 5000       # use another port
+```
+
+It accepts the same options as `app.py` (`--camera`, `--hr`, `--rppg-model`, `--avg-seconds`, `--screen`, ...). The camera is read by the Python process, so open the page on the same computer. The page shows the camera picture with the measured regions outlined, live and average heart rate, signal quality, the pulse and breathing graphs, breathing and blink rates, and frame rates. The Restart button (or the `r` key) restarts the average. Stop the server with Ctrl+C.
+
+The server only listens on `127.0.0.1` by default. `--host 0.0.0.0` makes it reachable from other devices on your network, which also lets them see your camera.
 
 ### Reading someone on a video call
 

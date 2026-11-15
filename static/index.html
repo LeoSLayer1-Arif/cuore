@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Cuore · Vital Signs Camera</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path fill='%23ff5a6e' d='M12 21s-7.5-4.6-10-9.3C.3 8.4 2.1 4 6.2 4c2.3 0 3.8 1.3 4.8 2.7h2C14 5.3 15.5 4 17.8 4 21.9 4 23.7 8.4 22 11.7 19.5 16.4 12 21 12 21z'/></svg>">
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <svg class="brand-heart" viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M12 21s-7.5-4.6-10-9.3C.3 8.4 2.1 4 6.2 4c2.3 0 3.8 1.3 4.8 2.7h2C14 5.3 15.5 4 17.8 4 21.9 4 23.7 8.4 22 11.7 19.5 16.4 12 21 12 21z"/>
+      </svg>
+      <div>
+        <h1>Cuore</h1>
+        <p>Vital signs from your camera</p>
+      </div>
+    </div>
+    <div class="topbar-right">
+      <span class="chip" id="hr-source" title="Heart rate method">—</span>
+      <span class="connection" id="connection" data-state="connecting">
+        <span class="dot"></span><span class="label">Connecting</span>
+      </span>
+    </div>
+  </header>
+
+  <div class="banner" id="error" hidden></div>
+
+  <main class="layout">
+    <!-- Camera -->
+    <section class="card video-card">
+      <div class="video-frame">
+        <img id="video" src="/video.mjpg" alt="Camera picture with the measured face and chest regions outlined">
+        <div class="video-placeholder" id="video-placeholder">
+          <div class="spinner"></div>
+          <span>Starting camera…</span>
+        </div>
+        <div class="status-pill" id="status" data-level="idle">
+          <span class="dot"></span><span class="label">Starting…</span>
+        </div>
+      </div>
+      <div class="legend">
+        <span><i class="swatch face"></i>Heart rate region</span>
+        <span><i class="swatch chest"></i>Chest (breathing)</span>
+        <span><i class="swatch motion"></i>Motion points</span>
+        <span class="legend-meta" id="motion-points"></span>
+      </div>
+      <ul class="tips" id="tips"></ul>
+    </section>
+
+    <!-- Heart rate -->
+    <section class="side">
+      <div class="card metric live">
+        <div class="card-head">
+          <h2>Heart rate</h2>
+          <span class="tag live-tag">LIVE</span>
+        </div>
+        <div class="metric-body">
+          <svg class="beat" id="beat" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M12 21s-7.5-4.6-10-9.3C.3 8.4 2.1 4 6.2 4c2.3 0 3.8 1.3 4.8 2.7h2C14 5.3 15.5 4 17.8 4 21.9 4 23.7 8.4 22 11.7 19.5 16.4 12 21 12 21z"/>
+          </svg>
+          <div class="value"><span id="bpm" class="num empty">--</span><span class="unit">BPM</span></div>
+        </div>
+        <div class="quality" id="quality-row">
+          <div class="quality-label"><span>Signal quality</span><span id="quality-text">—</span></div>
+          <div class="bar"><div class="bar-fill" id="quality-bar"></div><div class="bar-mark" id="quality-mark"></div></div>
+        </div>
+      </div>
+
+      <div class="card metric average">
+        <div class="card-head">
+          <h2>Average <span class="muted" id="avg-duration"></span></h2>
+          <span class="tag" id="avg-tag" data-phase="calibrating"><i class="rec-dot"></i><span>CAL</span></span>
+        </div>
+        <div class="avg-body">
+          <div class="ring">
+            <svg viewBox="0 0 120 120" aria-hidden="true">
+              <circle class="ring-track" cx="60" cy="60" r="52"/>
+              <circle class="ring-fill" id="avg-ring" cx="60" cy="60" r="52"/>
+            </svg>
+            <div class="ring-center">
+              <span id="avg-value" class="num empty">--</span>
+              <span class="unit">BPM</span>
+            </div>
+          </div>
+          <div class="avg-side">
+            <p class="avg-footer" id="avg-footer">Waiting for heart rate…</p>
+            <p class="muted small">The first 10 s calibrate and are left out. Recording pauses when there is no reading.</p>
+            <button class="button" id="avg-reset" type="button" title="Shortcut: R">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12a8 8 0 1 0 2.3-5.6M4 4v4h4"/></svg>
+              Restart
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div class="card chart-card">
+        <div class="card-head">
+          <h2>Pulse</h2>
+          <span class="chart-value pulse-text" id="pulse-value"></span>
+        </div>
+        <canvas id="pulse-chart" class="chart"></canvas>
+      </div>
+    </section>
+
+    <!-- Breathing and other readings -->
+    <section class="card chart-card wide">
+      <div class="card-head">
+        <h2>Breathing</h2>
+        <span class="chart-value breath-text" id="breath-value"></span>
+      </div>
+      <canvas id="breath-chart" class="chart tall"></canvas>
+    </section>
+
+    <section class="stats">
+      <div class="card stat">
+        <span class="stat-label">Breathing rate</span>
+        <span class="stat-value"><span id="resp">--</span><small>/min</small></span>
+        <span class="stat-note" id="resp-channel">&nbsp;</span>
+      </div>
+      <div class="card stat">
+        <span class="stat-label">Blink rate</span>
+        <span class="stat-value"><span id="blinks">--</span><small>/min</small></span>
+        <span class="stat-note">over the last minute</span>
+      </div>
+      <div class="card stat">
+        <span class="stat-label">Camera</span>
+        <span class="stat-value"><span id="fps-camera">--</span><small>fps</small></span>
+        <span class="stat-note">frames arriving</span>
+      </div>
+      <div class="card stat">
+        <span class="stat-label">Processed</span>
+        <span class="stat-value"><span id="fps-processed">--</span><small>fps</small></span>
+        <span class="stat-note">needs 15 or more</span>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    Screening demo, not a medical device. Press <kbd>R</kbd> to restart the average.
+  </footer>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
