@@ -112,6 +112,23 @@ def rate_from_times(times):
     return (len(times) - 1) / (times[-1] - times[0] + 1e-9)
 
 
+CAMERA_MAX_WIDTH = 960   # bigger frames are shrunk to 640 wide so face tracking stays fast
+
+
+def prepare_camera_frame(frame):
+    """Mirror a raw camera frame and limit its size, as the webcam path always has.
+
+    Returns (frame for processing, full-resolution mirrored frame). The phone
+    server calls this too, so phone frames get exactly the same treatment.
+    """
+    frame = cv2.flip(frame, 1)             # mirror view
+    full_frame = frame                     # full resolution, used by MotionPulseTracker
+    if frame.shape[1] > CAMERA_MAX_WIDTH:
+        scale = 640.0 / frame.shape[1]
+        frame = cv2.resize(frame, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+    return frame, full_frame
+
+
 class CameraSource:
     """Reads the webcam on a background thread and timestamps every frame on arrival.
 
@@ -120,7 +137,7 @@ class CameraSource:
     pulse look slower than it is.
     """
 
-    MAX_WIDTH = 960   # bigger frames are shrunk to 640 wide so face tracking stays fast
+    MAX_WIDTH = CAMERA_MAX_WIDTH
     BACKENDS = {"dshow": cv2.CAP_DSHOW, "msmf": cv2.CAP_MSMF}
 
     def __init__(self, index, width=None, height=None, backend="auto"):
@@ -197,11 +214,7 @@ class CameraSource:
             time.sleep(0.002)
         else:
             return None, None
-        frame = cv2.flip(frame, 1)             # mirror view
-        self.full_frame = frame                # full resolution, used by MotionPulseTracker
-        if frame.shape[1] > self.MAX_WIDTH:
-            scale = 640.0 / frame.shape[1]
-            frame = cv2.resize(frame, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+        frame, self.full_frame = prepare_camera_frame(frame)
         return frame, timestamp
 
     @property
@@ -662,6 +675,190 @@ class AverageBpmMonitor:
             self.result = self.running_average
 
 
+class FrameResult:
+    """Everything one processed frame produced, for the desktop window or the phone."""
+
+    def __init__(self, **fields):
+        self.__dict__.update(fields)
+
+
+class VitalsPipeline:
+    """The per-frame processing that used to live inside main().
+
+    It does not know where frames come from. The desktop app feeds it webcam
+    or screen frames; server.py feeds it frames sent by a phone. Both call
+    process() with a frame and the time it was captured, so both run exactly
+    the same measurement code.
+    """
+
+    def __init__(self, hr_mode="rppg", rppg_model="FacePhys.rlap", avg_seconds=60):
+        self.landmarker = create_landmarker()
+        self.heart = HeartRateEstimator()                 # used with --hr colour
+        self.rppg_hr = RppgHeartRate(rppg_model) if hr_mode == "rppg" else None
+        self.breathing = RespirationEstimator(channel_names=("chest", "head"))
+        self.blinks = BlinkCounter()
+        self.chest = ChestMotion()
+        self.motion = MotionPulseTracker()                # head and neck movement (experimental)
+        self.average = AverageBpmMonitor(avg_seconds)
+
+        self.t0 = None
+        self.last_timestamp_ms = -1
+        self.last_update = 0.0
+        self.last_face_time = -1e9
+        self.processed_times = deque(maxlen=60)
+        self.bpm = self.resp_rate = self.blink_rate = None
+
+    @property
+    def hr_source(self):
+        return self.rppg_hr.model_name if self.rppg_hr is not None else "colour"
+
+    @property
+    def processed_fps(self):
+        return rate_from_times(self.processed_times)
+
+    def process(self, frame, full_frame, arrived):
+        """frame: BGR image to measure (not drawn on). full_frame: the same image at full
+        resolution (or the same array). arrived: capture time in seconds."""
+        if self.t0 is None:
+            self.t0 = arrived
+        now = arrived - self.t0
+        self.processed_times.append(now)
+
+        # MediaPipe needs strictly increasing timestamps in milliseconds.
+        timestamp_ms = max(int(now * 1000), self.last_timestamp_ms + 1)
+        self.last_timestamp_ms = timestamp_ms
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        result = self.landmarker.detect_for_video(
+            mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb), timestamp_ms)
+        if self.rppg_hr is not None:
+            self.rppg_hr.add_frame(rgb, arrived)      # rgb is never drawn on, so it stays clean
+
+        heart, breathing, chest, motion = self.heart, self.breathing, self.chest, self.motion
+        face_found = bool(result.face_landmarks)
+        polygons = []
+        if face_found:
+            if now - self.last_face_time > FACE_LOST_RESET_SEC:
+                heart.reset()
+                breathing.reset()
+                chest.reset()
+                motion.reset()
+            self.last_face_time = now
+
+            h, w = frame.shape[:2]
+            points = to_pixels(result.face_landmarks[0], w, h)
+            polygons = [region_polygon(points, FOREHEAD, shrink=0.8),
+                        region_polygon(points, LEFT_CHEEK),
+                        region_polygon(points, RIGHT_CHEEK)]
+            # Sample colors before anything is drawn on the frame.
+            if self.rppg_hr is None:
+                colors = [region_mean_rgb(frame, polygon) for polygon in polygons]
+                if all(c is not None for c in colors):
+                    heart.add(now, np.concatenate(colors))
+
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            chest_y = chest.update(gray, points)
+            head_y = float(points[:, 1].mean())
+            breathing.add(now, [chest_y, head_y])
+
+            ear = (eye_aspect_ratio(points, LEFT_EYE) + eye_aspect_ratio(points, RIGHT_EYE)) / 2
+            self.blinks.update(now, ear)
+
+            # Motion tracking runs on the full-resolution frame, so scale the landmarks up.
+            to_full = np.array([full_frame.shape[1] / w, full_frame.shape[0] / h], dtype=np.float32)
+            motion.update(now, cv2.cvtColor(full_frame, cv2.COLOR_BGR2GRAY), points * to_full)
+        else:
+            to_full = np.array([full_frame.shape[1] / frame.shape[1],
+                                full_frame.shape[0] / frame.shape[0]], dtype=np.float32)
+
+        if now - self.last_update >= UPDATE_EVERY_SEC:
+            self.last_update = now
+            if self.rppg_hr is None:
+                self.bpm = heart.update()
+            self.resp_rate = breathing.update()
+            self.blink_rate = self.blinks.rate_per_min(now)
+        if self.rppg_hr is not None:
+            self.bpm = self.rppg_hr.update(now)            # updates itself once a second
+        bpm = self.bpm
+
+        rppg_hr = self.rppg_hr
+        if not face_found:
+            status, state = ("No face detected", RED), "no_face"
+        elif rppg_hr is not None:
+            if bpm is None:
+                status, state = ("Measuring... hold still", GRAY), "measuring"
+            elif rppg_hr.sqi is None or rppg_hr.sqi < RppgHeartRate.GOOD_SQI:
+                quality = f" (quality {rppg_hr.sqi:.2f})" if rppg_hr.sqi is not None else ""
+                status, state = ("Weak signal, hold still" + quality, YELLOW), "weak"
+            else:
+                status, state = (f"Signal good (quality {rppg_hr.sqi:.2f})", GREEN), "good"
+        elif heart.snr_db is None:
+            status, state = ("Measuring... hold still", GRAY), "measuring"
+        elif not heart.signal_ok:
+            status, state = ("Hold still, good light", YELLOW), "weak"
+        else:
+            status, state = ("Signal good", GREEN), "good"
+
+        live_bpm = bpm if face_found else None
+        self.average.update(now, live_bpm)                # pauses while there is no reading
+
+        if rppg_hr is not None:
+            pulse_wave, pulse_fs = rppg_hr.waveform, rppg_hr.fs
+        else:
+            pulse_wave, pulse_fs = heart.waveform, HR_FS
+
+        return FrameResult(
+            now=now, face_found=face_found, live_bpm=live_bpm, status=status, state=state,
+            polygons=polygons if face_found else [],
+            rppg_box=rppg_hr.box if (face_found and rppg_hr is not None) else None,
+            chest_box=chest.box if face_found else None,
+            motion_outlines=[[(o / to_full).astype(np.int32) for o in r.outlines]
+                             for r in motion.regions.values()] if face_found else [],
+            motion_points=[r.points / to_full for r in motion.regions.values()] if face_found else [],
+            pulse_wave=pulse_wave, pulse_fs=pulse_fs, breath_wave=breathing.waveform,
+        )
+
+    def text_rows(self, result, camera_fps):
+        """The info panel rows and grey notes, exactly as the desktop window shows them."""
+        breathing = self.breathing
+        resp_text = (f"{self.resp_rate:.1f} /min ({breathing.channel_name})"
+                     if self.resp_rate is not None else "--")
+        blink_text = f"{self.blink_rate:.0f} /min" if self.blink_rate is not None else "--"
+        fps = self.processed_fps
+        fps_text = f"Camera {camera_fps:.0f} fps, processed {fps:.0f} fps"
+        rows = [("Breathing", resp_text), ("Blinks", blink_text)]
+        notes = [fps_text + ("  (need 15+)" if fps < 15 else "")]
+        if result.face_found and self.chest.box is None:
+            notes.append("Tip: sit back so your shoulders show")
+        if result.face_found:
+            head_n = len(self.motion.regions["head"].points)
+            neck_n = len(self.motion.regions["neck"].points)
+            notes.append(f"Motion points: head {head_n}, neck {neck_n}")
+        return rows, notes
+
+    def close(self):
+        if self.rppg_hr is not None:
+            self.rppg_hr.close()
+        self.landmarker.close()
+
+
+def draw_overlays(frame, result, colour_mode):
+    """Face regions, chest box and motion points on the camera picture (desktop window)."""
+    if not result.face_found:
+        return
+    if colour_mode:
+        cv2.polylines(frame, result.polygons, True, GREEN, 1)
+    elif result.rppg_box is not None:
+        (top, bottom), (left, right) = result.rppg_box
+        cv2.rectangle(frame, (int(left), int(top)), (int(right), int(bottom)), GREEN, 1)
+    if result.chest_box is not None:
+        x0, y0, x1, y1 = result.chest_box
+        cv2.rectangle(frame, (x0, y0), (x1, y1), BLUE, 1)
+    for outlines, points in zip(result.motion_outlines, result.motion_points):
+        cv2.polylines(frame, outlines, True, MAGENTA, 1)
+        for x, y in points:
+            cv2.circle(frame, (int(x), int(y)), 1, MAGENTA, -1)
+
+
 # ----- dashboard drawing -----
 
 def put_text(img, text, org, scale, color, thickness=1, font=FONT):
@@ -807,10 +1004,8 @@ def draw_live_card(img, box, bpm, source_name):
     put_text(img, source_name, (x + 14, y + h - 12), 0.4, TEXT_FAINT)
 
 
-def draw_average_card(img, box, avg, now):
-    x, y, w, h = box
-    draw_panel(img, box)
-    put_text(img, f"AVERAGE ({format_duration(avg.duration)})", (x + 14, y + 24), 0.45, TEXT_DIM)
+def average_card_text(avg):
+    """Tag, value and footer text of the average card. Shared by the desktop and phone UIs."""
     if avg.done:
         tag, tag_color = "FINAL", AVG_COLOR
         value, value_color = f"{avg.result:.0f}", AVG_COLOR
@@ -835,6 +1030,14 @@ def draw_average_card(img, box, avg, now):
         else:
             footer = (f"recording {format_duration(avg.recorded_sec)} / "
                       f"{format_duration(avg.duration)}")
+    return tag, tag_color, value, value_color, footer
+
+
+def draw_average_card(img, box, avg, now):
+    x, y, w, h = box
+    draw_panel(img, box)
+    put_text(img, f"AVERAGE ({format_duration(avg.duration)})", (x + 14, y + 24), 0.45, TEXT_DIM)
+    tag, tag_color, value, value_color, footer = average_card_text(avg)
     tag_x = x + w - 14 - text_width(tag, 0.4)
     put_text(img, tag, (tag_x, y + 24), 0.4, tag_color)
     if tag == "REC" and int(now * 2) % 2 == 0:                  # blinking recording dot
@@ -897,21 +1100,7 @@ def main():
         source = ScreenSource(args.screen)
     else:
         source = CameraSource(args.camera, args.width, args.height, args.backend)
-    landmarker = create_landmarker()
-    heart = HeartRateEstimator()                 # used with --hr colour
-    rppg_hr = RppgHeartRate(args.rppg_model) if args.hr == "rppg" else None
-    breathing = RespirationEstimator(channel_names=("chest", "head"))
-    blinks = BlinkCounter()
-    chest = ChestMotion()
-    motion = MotionPulseTracker()                # head and neck movement (experimental)
-    average = AverageBpmMonitor(args.avg_seconds)
-
-    t0 = None
-    last_timestamp_ms = -1
-    last_update = 0.0
-    last_face_time = -1e9
-    processed_times = deque(maxlen=60)
-    bpm = resp_rate = blink_rate = None
+    pipeline = VitalsPipeline(args.hr, args.rppg_model, args.avg_seconds)
 
     cv2.namedWindow(WINDOW, cv2.WINDOW_NORMAL)
     try:
@@ -920,115 +1109,9 @@ def main():
             if frame is None:
                 print("No frames from the camera. Is another app using it?")
                 break
-            if t0 is None:
-                t0 = arrived
-            now = arrived - t0
-            processed_times.append(now)
-
-            # MediaPipe needs strictly increasing timestamps in milliseconds.
-            timestamp_ms = max(int(now * 1000), last_timestamp_ms + 1)
-            last_timestamp_ms = timestamp_ms
-            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            result = landmarker.detect_for_video(
-                mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb), timestamp_ms)
-            if rppg_hr is not None:
-                rppg_hr.add_frame(rgb, arrived)      # rgb is never drawn on, so it stays clean
-
-            face_found = bool(result.face_landmarks)
-            if face_found:
-                if now - last_face_time > FACE_LOST_RESET_SEC:
-                    heart.reset()
-                    breathing.reset()
-                    chest.reset()
-                    motion.reset()
-                last_face_time = now
-
-                h, w = frame.shape[:2]
-                points = to_pixels(result.face_landmarks[0], w, h)
-                polygons = [region_polygon(points, FOREHEAD, shrink=0.8),
-                            region_polygon(points, LEFT_CHEEK),
-                            region_polygon(points, RIGHT_CHEEK)]
-                # Sample colors before drawing anything on the frame.
-                if rppg_hr is None:
-                    colors = [region_mean_rgb(frame, polygon) for polygon in polygons]
-                    if all(c is not None for c in colors):
-                        heart.add(now, np.concatenate(colors))
-
-                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-                chest_y = chest.update(gray, points)
-                head_y = float(points[:, 1].mean())
-                breathing.add(now, [chest_y, head_y])
-
-                ear = (eye_aspect_ratio(points, LEFT_EYE) + eye_aspect_ratio(points, RIGHT_EYE)) / 2
-                blinks.update(now, ear)
-
-                # Motion tracking runs on the full-resolution frame, so scale the landmarks up.
-                full = source.full_frame
-                to_full = np.array([full.shape[1] / w, full.shape[0] / h], dtype=np.float32)
-                motion.update(now, cv2.cvtColor(full, cv2.COLOR_BGR2GRAY), points * to_full)
-
-                if rppg_hr is None:
-                    cv2.polylines(frame, polygons, True, GREEN, 1)
-                elif rppg_hr.box is not None:
-                    (top, bottom), (left, right) = rppg_hr.box
-                    cv2.rectangle(frame, (int(left), int(top)), (int(right), int(bottom)), GREEN, 1)
-                if chest.box is not None:
-                    x0, y0, x1, y1 = chest.box
-                    cv2.rectangle(frame, (x0, y0), (x1, y1), BLUE, 1)
-                for region in motion.regions.values():        # back to display size
-                    outlines = [(outline / to_full).astype(np.int32) for outline in region.outlines]
-                    cv2.polylines(frame, outlines, True, MAGENTA, 1)
-                    for x, y in region.points / to_full:
-                        cv2.circle(frame, (int(x), int(y)), 1, MAGENTA, -1)
-
-            if now - last_update >= UPDATE_EVERY_SEC:
-                last_update = now
-                if rppg_hr is None:
-                    bpm = heart.update()
-                resp_rate = breathing.update()
-                blink_rate = blinks.rate_per_min(now)
-            if rppg_hr is not None:
-                bpm = rppg_hr.update(now)            # updates itself once a second
-
-            if not face_found:
-                status = ("No face detected", RED)
-            elif rppg_hr is not None:
-                if bpm is None:
-                    status = ("Measuring... hold still", GRAY)
-                elif rppg_hr.sqi is None or rppg_hr.sqi < RppgHeartRate.GOOD_SQI:
-                    quality = f" (quality {rppg_hr.sqi:.2f})" if rppg_hr.sqi is not None else ""
-                    status = ("Weak signal, hold still" + quality, YELLOW)
-                else:
-                    status = (f"Signal good (quality {rppg_hr.sqi:.2f})", GREEN)
-            elif heart.snr_db is None:
-                status = ("Measuring... hold still", GRAY)
-            elif not heart.signal_ok:
-                status = ("Hold still, good light", YELLOW)
-            else:
-                status = ("Signal good", GREEN)
-
-            live_bpm = bpm if face_found else None
-            average.update(now, live_bpm)                # pauses while there is no reading
-
-            hr_source = rppg_hr.model_name if rppg_hr is not None else "colour"
-            resp_text = (f"{resp_rate:.1f} /min ({breathing.channel_name})"
-                         if resp_rate is not None else "--")
-            blink_text = f"{blink_rate:.0f} /min" if blink_rate is not None else "--"
-            fps = rate_from_times(processed_times)
-            fps_text = f"Camera {source.fps:.0f} fps, processed {fps:.0f} fps"
-            rows = [("Breathing", resp_text), ("Blinks", blink_text)]
-            notes = [fps_text + ("  (need 15+)" if fps < 15 else "")]
-            if face_found and chest.box is None:
-                notes.append("Tip: sit back so your shoulders show")
-            if face_found:
-                head_n = len(motion.regions["head"].points)
-                neck_n = len(motion.regions["neck"].points)
-                notes.append(f"Motion points: head {head_n}, neck {neck_n}")
-
-            if rppg_hr is not None:
-                pulse_wave, pulse_fs = rppg_hr.waveform, rppg_hr.fs
-            else:
-                pulse_wave, pulse_fs = heart.waveform, HR_FS
+            result = pipeline.process(frame, source.full_frame, arrived)
+            draw_overlays(frame, result, colour_mode=pipeline.rppg_hr is None)
+            rows, notes = pipeline.text_rows(result, source.fps)
 
             # Draw the dashboard on an enlarged copy so the text and graphs are sharp.
             h, w = frame.shape[:2]
@@ -1036,20 +1119,19 @@ def main():
             if w != DISPLAY_WIDTH:
                 display = cv2.resize(frame, (DISPLAY_WIDTH, round(h * DISPLAY_WIDTH / w)),
                                      interpolation=cv2.INTER_LINEAR)
-            draw_dashboard(display, now, live_bpm, hr_source, average, rows, status, notes,
-                           pulse_wave, pulse_fs, breathing.waveform)
+            draw_dashboard(display, result.now, result.live_bpm, pipeline.hr_source,
+                           pipeline.average, rows, result.status, notes,
+                           result.pulse_wave, result.pulse_fs, result.breath_wave)
             cv2.imshow(WINDOW, display)
 
             key = cv2.waitKey(1) & 0xFF
             if key in (ord("q"), 27):
                 break
             if key == ord("r"):
-                average.reset()
+                pipeline.average.reset()
     finally:
         source.release()
-        if rppg_hr is not None:
-            rppg_hr.close()
-        landmarker.close()
+        pipeline.close()
         cv2.destroyAllWindows()
 
 
