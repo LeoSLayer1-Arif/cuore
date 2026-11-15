@@ -76,14 +76,6 @@ Buy a fingertip pulse oximeter (about $15) and wear it while the app runs. After
 | Green outlines sit on hair or background | Adjust the landmark lists `FOREHEAD`, `LEFT_CHEEK`, `RIGHT_CHEEK` in `app.py`. |
 | Breathing rate is erratic | Expected for the first 30 seconds. It comes from tiny head motion and is the weakest signal. |
 
-## Demo script (3 minutes)
-
-1. Pitch: "Your doctor can't take your pulse over Zoom. Now they can."
-2. A judge wears the oximeter and sits in front of the laptop. Show the numbers match.
-3. They do 20 squats and sit back down. Heart rate and stress score rise live.
-4. Show screen mode on a teammate who joined by video call.
-5. Close with the limits: it is a screening tool, not a medical device. Accuracy drops with motion, poor light, and skin tones it was not tested on.
-
 ## Limitations and ethics
 
 - Not a medical device. Do not use it for diagnosis.
