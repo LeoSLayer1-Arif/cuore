@@ -198,3 +198,49 @@ def test_heart_baseline_collects_only_good_seconds():
 def test_readings_publish_the_threshold():
     readings = server.SharedState("browser").get_readings()
     assert readings["signal_quality_threshold"] == 0.22
+
+
+# ---------------------------------------------------------------- 10 s calibration excluded from Average BPM
+
+@pytest.mark.parametrize("elapsed, status, counts", [
+    (0.0, "good", False), (5.0, "good", False), (9.9, "good", False),   # calibration
+    (10.0, "good", True),                                                # boundary: post-calibration
+    (11.0, "good", True), (300.0, "good", True),
+    (11.0, "weak", False), (11.0, "measuring", False), (11.0, "no_face", False),   # invalid quality
+    (None, "good", False),                                               # no session clock yet
+])
+def test_counts_toward_average(elapsed, status, counts):
+    assert server.counts_toward_average(elapsed, status) is counts
+
+
+def test_calibration_is_exactly_10_s():
+    assert server.CALIBRATION_SEC == 10.0
+
+
+def test_average_accumulates_only_eligible_samples():
+    # one sample per second, signal good throughout except a weak patch at 20–24 s
+    samples = [(t, 60.0 + t, "weak" if 20 <= t < 25 else "good") for t in range(0, 40)]
+    used = [bpm for t, bpm, st in samples if server.counts_toward_average(float(t), st)]
+    assert len(used) == 40 - 10 - 5                       # 10 s calibration and 5 weak seconds left out
+    assert min(used) == 70.0                              # first counted sample is the one at 10 s
+    assert sum(used) / len(used) == pytest.approx(sum(60.0 + t for t in range(10, 40) if not 20 <= t < 25) / 25)
+    # the average grows as eligible samples arrive and ignores everything before 10 s
+    running = [sum(used[:k]) / k for k in range(1, len(used) + 1)]
+    assert running[0] == 70.0 and running[-1] > running[0]
+
+
+def test_new_session_resets_the_calibration_clock():
+    shared = server.SharedState("browser")
+    shared.start_session()
+    assert shared.get_readings()["session"]["elapsed"] is None
+    assert shared.get_readings()["heart_in_average"] is False
+
+
+def test_processing_loop_times_samples_from_the_first_frame():
+    import inspect
+    src = inspect.getsource(server.processing_loop)
+    # the clock starts with the session's first frame and every published sample carries its elapsed time
+    assert "s.started = now" in src
+    assert "elapsed = now - s.started" in src
+    assert "counts_toward_average(elapsed, status_code)" in src
+    assert server.Session.__init__.__code__.co_names.count("started") == 1   # reset per Session object

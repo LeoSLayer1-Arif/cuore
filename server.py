@@ -68,6 +68,7 @@ HR_HIGH_RATIO = 1.15
 BASELINE_MIN_VALID_SEC = 30.0   # coverage: at least this many seconds of valid readings
 TICK_SEC = 0.5                  # one baseline sample per vitals update (app.UPDATE_EVERY_SEC)
 METRICS = ("heart", "breath", "blink")
+CALIBRATION_SEC = 10.0          # first 10 s of each session initialise CUORE; never in Average BPM
 
 
 class MetricBaseline:
@@ -216,11 +217,20 @@ def wave_for_json(wave, fs, seconds):
             "values": [round(float(v), 4) if math.isfinite(v) else None for v in thinned]}
 
 
+def counts_toward_average(elapsed, status_code):
+    """Whether a heart-rate sample may count toward the session's Average BPM: only
+    once the 10 s calibration is over (elapsed >= 10 s, measured by frame capture time
+    from the session's first frame) and only when the heart signal passed its quality
+    check. Live BPM is unaffected."""
+    return elapsed is not None and elapsed >= CALIBRATION_SEC and status_code == "good"
+
+
 def default_readings(source, session_id):
     return {
         "running": False,
         "error": None,
-        "session": {"id": session_id, "source": source},
+        "session": {"id": session_id, "source": source, "elapsed": None},
+        "heart_in_average": False,
         "heart_rate": None,
         "hr_source": None,
         "heart_snr_db": None,
@@ -404,6 +414,7 @@ class Session:
         self.bpm = self.resp_rate = self.blink_rate = None
         self.face_ticks = deque()      # (time, face found) per vitals update, last 60 s (diagnostics)
         self.latency_ms = None         # capture → published result, smoothed (diagnostics)
+        self.started = None            # capture time of this session's first frame (calibration clock)
 
 
 def processing_loop(args, shared, stop, source):
@@ -451,6 +462,8 @@ def processing_loop(args, shared, stop, source):
             now = arrived - t0
             if s.last_update is None:
                 s.last_update = now
+            if s.started is None:
+                s.started = now                       # calibration starts with the first frame
             s.processed_times.append(now)
 
             timestamp_ms = max(int(now * 1000), last_timestamp_ms + 1)
@@ -590,9 +603,11 @@ def processing_loop(args, shared, stop, source):
             latency = (time.monotonic() - arrived) * 1000.0     # capture → this result
             s.latency_ms = latency if s.latency_ms is None else s.latency_ms * 0.8 + latency * 0.2
             face_ratio = (sum(1 for _, f in s.face_ticks if f) / len(s.face_ticks)) if s.face_ticks else None
+            elapsed = now - s.started               # this sample's capture time within the session
             shared.set_readings(
-                session={"id": s.id, "source": args.source},
+                session={"id": s.id, "source": args.source, "elapsed": round(elapsed, 3)},
                 heart_rate=_num(live_bpm),
+                heart_in_average=live_bpm is not None and counts_toward_average(elapsed, status_code),
                 hr_source=hr_source,
                 heart_snr_db=_num(s.heart.snr_db) if rppg_hr is None else None,
                 signal_quality=_num(rppg_hr.sqi) if rppg_hr is not None else None,

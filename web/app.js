@@ -501,6 +501,11 @@ const BASE_NAMES = { heart: "heart rate", breath: "breathing", blink: "blinks" }
 const sqiPass = () => (app.last && typeof app.last.signal_quality_threshold === "number" ? app.last.signal_quality_threshold : null);
 const passText = () => (sqiPass() === null ? "its pass line" : `its ${sqiPass().toFixed(2)} pass line`);
 const cap = (s) => (s ? s[0].toUpperCase() + s.slice(1) : s);
+// Session Average BPM: the first 10 s of each session are calibration and never count.
+// The server decides per sample (capture time >= 10 s and a good heart signal); the page
+// only averages what the server marked, so the rule lives in one place.
+const CALIBRATION_SEC = 10;
+const avgSamples = () => app.history.filter((s) => s.hr !== null && s.inAvg);
 
 function metricStatus(d) {
   const dg = d.diag || {};
@@ -721,13 +726,15 @@ function renderLive(d) {
   chip.dataset.state = st.heart.state;
   chip.textContent = { reliable: "Reliable", provisional: "Provisional", collecting: "Measuring", none: "No face" }[st.heart.state];
 
-  // Session average: reliable seconds only, computed here from this session's history.
+  // Session average: only samples the server marked as counting toward the average
+  // (captured after the first 10 s calibration, with a good heart signal).
   // (The server's 2-minute monitor also averages weak readings, so it isn't shown.)
-  const rel = app.history.filter((s) => s.hr !== null && s.hrState === "reliable");
+  const rel = avgSamples();
+  const elapsed = d.session && typeof d.session.elapsed === "number" ? d.session.elapsed : null;
   if (rel.length) {
     const avg = rel.reduce((a, s) => a + s.hr, 0) / rel.length;
     $("avg-v").textContent = avg.toFixed(0);
-    let sub = `From ${rel.length} reliable second${rel.length === 1 ? "" : "s"} of ${mmss(sessionSec())}`;
+    let sub = `From ${rel.length} reliable second${rel.length === 1 ? "" : "s"} after the 10 s calibration`;
     if (b.heart_rate !== null) {
       const diff = Math.round(avg - b.heart_rate);
       sub += diff === 0 ? ` · at your baseline of ${b.heart_rate.toFixed(0)}` : ` · ${Math.abs(diff)} ${diff > 0 ? "above" : "below"} your baseline of ${b.heart_rate.toFixed(0)}`;
@@ -735,7 +742,9 @@ function renderLive(d) {
     $("avg-sub").textContent = sub;
   } else {
     $("avg-v").textContent = "--";
-    $("avg-sub").textContent = d.heart_rate !== null ? "No reliable seconds yet · weak-signal readings are left out" : "Waiting for reliable readings";
+    $("avg-sub").textContent = elapsed === null || elapsed < CALIBRATION_SEC
+      ? `Calibrating · the average starts after the first ${CALIBRATION_SEC} s`
+      : d.heart_rate !== null ? "No reliable seconds yet · weak-signal readings are left out" : "Waiting for reliable readings";
   }
   $("avg-v").classList.toggle("empty", !rel.length);
 
@@ -1035,6 +1044,7 @@ function summaryData() {
   const H = app.history, n = H.length;
   const hrAll = H.filter((s) => s.hr !== null);
   const hrRel = hrAll.filter((s) => s.hrState === "reliable");
+  const hrAvg = avgSamples();
   const br = H.filter((s) => s.br !== null);
   const blink = H.filter((s) => s.blink !== null);
   const blinkFull = blink.filter((s) => s.blinkFull);
@@ -1043,7 +1053,7 @@ function summaryData() {
   const range = (rows, k) => (rows.length ? [Math.min(...rows.map((s) => s[k])), Math.max(...rows.map((s) => s[k]))] : null);
   return {
     n, face: H.filter((s) => s.face).length,
-    hrAll, hrRel, hrMean: meanOfKey(hrRel, "hr"), hrRange: range(hrRel, "hr"),
+    hrAll, hrRel, hrAvg, hrMean: meanOfKey(hrAvg, "hr"), hrRange: range(hrAvg, "hr"),
     br, brMean: meanOfKey(br, "br"), brRange: range(br, "br"),
     blink, blinkFull, blinkLast: blink.length ? blink[blink.length - 1] : null, blinkFullMean: meanOfKey(blinkFull, "blink"),
     qMean: meanOfKey(qs, "q"),
@@ -1079,10 +1089,10 @@ function renderSummary() {
   setOv("ov-dur", mmss(dur), `${S.n} s with readings · face in view ${pctText(S.face, S.n)}`, false,
     app.sessionEnded ? [app.quick ? "Quick read" : "Complete", "ok"] : ["In progress", "warn"]);
   setOv("ov-hr", S.hrMean === null ? "--" : S.hrMean.toFixed(0),
-    S.hrMean === null ? (S.hrAll.length ? `${S.hrAll.length} s of weak-signal readings only; not averaged` : "No heart-rate readings")
-      : `Reliable seconds only · range ${S.hrRange[0].toFixed(0)}–${S.hrRange[1].toFixed(0)}` + (b.heart_rate != null ? ` · baseline ${b.heart_rate.toFixed(0)}` : ""),
+    S.hrMean === null ? (S.hrRel.length ? "No reliable seconds after the 10 s calibration" : S.hrAll.length ? `${S.hrAll.length} s of weak-signal readings only; not averaged` : "No heart-rate readings")
+      : `Reliable seconds after the 10 s calibration · range ${S.hrRange[0].toFixed(0)}–${S.hrRange[1].toFixed(0)}` + (b.heart_rate != null ? ` · baseline ${b.heart_rate.toFixed(0)}` : ""),
     S.hrMean === null,
-    S.hrMean === null ? (S.hrAll.length ? ["Provisional only", "warn"] : ["Unavailable", "na"]) : relPct >= 0.6 ? ["Reliable", "ok"] : ["Partly reliable", "warn"]);
+    S.hrMean === null ? (S.hrRel.length ? ["Calibration only", "warn"] : S.hrAll.length ? ["Provisional only", "warn"] : ["Unavailable", "na"]) : relPct >= 0.6 ? ["Reliable", "ok"] : ["Partly reliable", "warn"]);
   setOv("ov-br", S.brMean === null ? "--" : S.brMean.toFixed(1),
     S.brMean === null ? (app.quick ? "Needs 20 s of steady signal" : "No breathing readings")
       : `${S.br.length} s of readings · range ${S.brRange[0].toFixed(1)}–${S.brRange[1].toFixed(1)}` + (b.breathing_rate != null ? ` · baseline ${b.breathing_rate.toFixed(1)}` : ""),
@@ -1183,7 +1193,9 @@ function findings(S, b) {
   if (!S.n) return [["", ["No readings.", "The session ended before any measurement arrived."]]];
   const relShare = S.hrRel.length / S.n;
   if (S.hrRel.length) {
-    out.push([relShare >= 0.6 ? "ok" : "warn", ["Heart rate", `was reliable for ${pctText(S.hrRel.length, S.n)} of the session, averaging ${S.hrMean.toFixed(0)} bpm.`]]);
+    out.push([relShare >= 0.6 ? "ok" : "warn", ["Heart rate", S.hrMean === null
+      ? `was reliable for ${pctText(S.hrRel.length, S.n)} of the session, but only during the first ${CALIBRATION_SEC} s calibration, which isn't averaged.`
+      : `was reliable for ${pctText(S.hrRel.length, S.n)} of the session, averaging ${S.hrMean.toFixed(0)} bpm (the first ${CALIBRATION_SEC} s calibration is left out).`]]);
   } else if (S.hrAll.length) {
     out.push(["bad", ["Heart rate", `was never reliable: the heart signal never rose above ${passText()}${S.qMean !== null ? ` (mean ${S.qMean.toFixed(2)})` : ""}. Even light from the front usually helps.`]]);
   } else out.push(["bad", ["Heart rate", "was not measured."]]);
@@ -1231,6 +1243,8 @@ function historySample(d) {
     t: sessionSec(),
     face: !!d.face_found,
     hr: d.heart_rate, hrState: st.heart.state,
+    inAvg: d.heart_in_average === true,          // server: after the 10 s calibration and good signal
+    elapsed: d.session && typeof d.session.elapsed === "number" ? d.session.elapsed : null,
     q: d.signal_quality ?? null,
     br: d.breathing_rate,
     blink: d.blink_rate, blinkFull: st.blink.state === "reliable",

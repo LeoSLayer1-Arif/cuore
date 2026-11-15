@@ -459,7 +459,7 @@ function loadLogo() {
 
 // ---------------------------------------------------------------- CSV
 
-const CSV_COLS = ["elapsed_s", "timestamp_utc", "face_in_view", "heart_rate_bpm", "heart_rate_status", "heart_signal_quality",
+const CSV_COLS = ["elapsed_s", "timestamp_utc", "face_in_view", "heart_rate_bpm", "heart_rate_status", "heart_signal_quality", "counts_toward_average",
   "breathing_rate_per_min", "breathing_status", "blink_rate_per_min", "blink_status", "composure_state"];
 
 function reportCsv() {
@@ -472,6 +472,7 @@ function reportCsv() {
     s.hr === null ? null : Number(s.hr.toFixed(1)),
     s.hr === null ? (s.face ? "no_reading" : "no_face") : HEART[s.hrState] || "unknown",
     s.q === null ? null : Number(s.q.toFixed(3)),
+    s.inAvg ? 1 : 0,                         // 0 during the first 10 s calibration or with a weak signal
     s.br === null ? null : Number(s.br.toFixed(1)),
     s.br === null ? "no_reading" : "measured",
     s.blink === null ? null : Number(s.blink.toFixed(1)),
