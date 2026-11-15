@@ -84,7 +84,7 @@ venv/bin/pip install -r requirements.txt</code></pre>
           <li>
             <b>Start the server</b>
             <pre class="code"><code>venv/bin/python server.py</code></pre>
-            <span class="note">The first start downloads MediaPipe's face-landmark model (a few MB) from Google's public model storage. That is a file download only; nothing about you is sent. It can take a minute.</span>
+            <span class="note">Everything it needs is included, including MediaPipe's face-landmark model, so it downloads nothing while it runs. The first start takes about half a minute while the heart-rate model loads.</span>
           </li>
           <li>
             <b>Open CUORE</b>
