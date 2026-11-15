@@ -1,3 +1,5 @@
+> **Note:** This is a copy of the upstream documentation for the third-party [open-rppg](https://github.com/KegangWangCCNU/open-rppg) library, which Cuore uses for its default heart-rate model. It is kept here for reference and does not describe Cuore itself. The license section below applies to open-rppg, not to Cuore.
+
 # Open-rppg
 
 Open-rppg is a comprehensive Python toolbox designed for Remote Photoplethysmography (rPPG) inference. It provides a unified interface for state-of-the-art deep learning models, enabling physiological signal measurement (such as heart rate and heart rate variability) from facial videos. The toolkit supports both offline video processing and low-latency real-time inference using JAX. 

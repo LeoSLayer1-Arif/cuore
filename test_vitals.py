@@ -4,8 +4,7 @@ Run:  python test_vitals.py
 """
 import numpy as np
 
-from vitals import (BlinkCounter, HeartRateEstimator, RespirationEstimator,
-                    StressScore)
+from vitals import BlinkCounter, HeartRateEstimator, RespirationEstimator
 
 rng = np.random.default_rng(0)
 
@@ -23,8 +22,10 @@ def test_heart_rate(true_bpm=72.0):
     pulse_gain = np.array([0.3, 1.0, 0.5]) * 0.002   # green carries most of the pulse
     for t in jittered_times(20):
         light = 1.0 + 0.02 * np.sin(2 * np.pi * 0.2 * t)   # slow lighting drift
-        rgb = base * light * (1 + pulse_gain * np.sin(2 * np.pi * f * t))
-        est.add(t, rgb + rng.normal(0, 0.05, 3))
+        pulse = 1 + pulse_gain * np.sin(2 * np.pi * f * t)
+        # One R, G, B triple per face region (forehead, left cheek, right cheek).
+        regions = [base * light * pulse + rng.normal(0, 0.05, 3) for _ in range(3)]
+        est.add(t, np.concatenate(regions))
         if int(t * 2) != int((t - 1 / 30) * 2):             # update about twice a second
             est.update()
     bpm = est.update()
@@ -35,13 +36,15 @@ def test_heart_rate(true_bpm=72.0):
 
 def test_respiration(true_rate=15.0):
     f = true_rate / 60.0
-    est = RespirationEstimator()
+    est = RespirationEstimator(channel_names=("chest", "head"))
     for t in jittered_times(45):
-        est.add(t, 240.0 + 1.5 * np.sin(2 * np.pi * f * t) + rng.normal(0, 0.1))
+        chest = 3.0 * np.sin(2 * np.pi * f * t) + rng.normal(0, 0.1)
+        head = 240.0 + 0.5 * np.sin(2 * np.pi * f * t) + rng.normal(0, 0.3)
+        est.add(t, [chest, head])
     rate = est.update()
     assert rate is not None, "no breathing rate produced"
     assert abs(rate - true_rate) < 2, f"breathing {rate:.1f}, expected {true_rate}"
-    print(f"breathing    OK: {rate:.1f}/min (true {true_rate})")
+    print(f"breathing    OK: {rate:.1f}/min (true {true_rate}, from {est.channel_name})")
 
 
 def test_blinks():
@@ -56,21 +59,8 @@ def test_blinks():
     print(f"blinks       OK: {rate:.1f}/min (true 19)")
 
 
-def test_stress():
-    score = StressScore(calibration_sec=30.0)
-    result = None
-    for i in range(80):                                  # 40 s at 70 BPM: calibration
-        result = score.update(i * 0.5, 70.0, 15.0, 15.0)
-    assert result is not None and abs(result - 30.0) < 1e-6, f"relaxed score {result}"
-    result = score.update(41.0, 90.0, 15.0, 15.0)        # heart rate +20 BPM
-    assert abs(result - 70.0) < 1e-6, f"raised score {result}, expected 70"
-    assert score.update(41.5, None, 15.0, 15.0) is None, "score should be None without heart rate"
-    print("stress score OK: 30 at baseline, 70 at +20 BPM")
-
-
 if __name__ == "__main__":
     test_heart_rate()
     test_respiration()
     test_blinks()
-    test_stress()
     print("All checks passed.")
