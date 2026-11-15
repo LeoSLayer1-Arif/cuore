@@ -150,3 +150,51 @@ def test_pairing_codes_are_random_and_unambiguous():
     codes = {Pairing().code for _ in range(200)}
     assert len(codes) == 200
     assert all(len(c) == server.PAIR_LEN and not set(c) & set("01OIL") for c in codes)
+
+
+# ---------------------------------------------------------------- heart signal quality threshold
+
+class FakeRppg:
+    def __init__(self, sqi):
+        self.sqi = sqi
+
+
+def test_good_sqi_is_exactly_0_15():
+    assert server.vs.RppgHeartRate.GOOD_SQI == 0.15
+
+
+@pytest.mark.parametrize("sqi, expected", [
+    (0.10, "weak"), (0.149, "weak"), (0.150, "weak"),      # SQI <= 0.15: not good
+    (0.151, "good"), (0.20, "good"), (0.50, "good"),      # SQI > 0.15: good
+    (None, "weak"),                                       # no quality reported: not good
+])
+def test_heart_signal_classification_boundary(sqi, expected):
+    code, _ = server.signal_status(True, 72.0, FakeRppg(sqi), None)
+    assert code == expected
+
+
+def test_status_text_keeps_the_real_sqi():
+    _, (text, _) = server.signal_status(True, 72.0, FakeRppg(0.151), None)
+    assert "0.15" in text                                  # reported as measured, never raised
+
+
+def test_no_face_and_measuring_are_unchanged():
+    assert server.signal_status(False, 72.0, FakeRppg(0.9), None)[0] == "no_face"
+    assert server.signal_status(True, None, FakeRppg(0.9), None)[0] == "measuring"
+
+
+def test_heart_baseline_collects_only_good_seconds():
+    # mirrors the processing loop: heart=live_bpm if status_code == "good" else None
+    def run(sqi):
+        b = MetricBaseline()
+        for i in range(0, 121):
+            code, _ = server.signal_status(True, 70.0, FakeRppg(sqi), None)
+            b.add(i * 0.5, 70.0 if code == "good" else None)
+        return b
+    assert not run(0.150).ready and run(0.150).valid_sec() == 0
+    assert run(0.151).ready and run(0.151).mean() == 70.0
+
+
+def test_readings_publish_the_threshold():
+    readings = server.SharedState("browser").get_readings()
+    assert readings["signal_quality_threshold"] == 0.15

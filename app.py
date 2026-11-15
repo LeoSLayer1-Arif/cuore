@@ -501,7 +501,7 @@ class RppgHeartRate:
     WINDOW_SEC = 10       # heart rate from the last 10 seconds of pulse signal
     WAVE_SEC = 6          # pulse wave shown on screen
     UPDATE_EVERY_SEC = 1.0
-    GOOD_SQI = 0.5        # the library's signal quality index, 0 (noise) to 1 (clean)
+    GOOD_SQI = 0.15       # the library's signal quality index, 0 (noise) to 1 (clean); good only when SQI > 0.15
 
     def __init__(self, model_name):
         import rppg                              # only needed in this mode
@@ -966,7 +966,7 @@ def main():
             elif rppg_hr is not None:
                 if bpm is None:
                     status = ("Measuring... hold still", GRAY)
-                elif rppg_hr.sqi is None or rppg_hr.sqi < RppgHeartRate.GOOD_SQI:
+                elif rppg_hr.sqi is None or rppg_hr.sqi <= RppgHeartRate.GOOD_SQI:
                     quality = f" (quality {rppg_hr.sqi:.2f})" if rppg_hr.sqi is not None else ""
                     status = ("Weak signal, hold still" + quality, YELLOW)
                 else:

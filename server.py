@@ -225,6 +225,7 @@ def default_readings(source, session_id):
         "hr_source": None,
         "heart_snr_db": None,
         "signal_quality": None,
+        "signal_quality_threshold": vs.RppgHeartRate.GOOD_SQI,   # heart signal is good only above this
         "breathing_rate": None,
         "breathing_channel": None,
         "blink_rate": None,
@@ -374,7 +375,7 @@ def signal_status(face_found, bpm, rppg_hr, heart):
     if rppg_hr is not None:
         if bpm is None:
             return "measuring", ("Measuring... hold still", vs.GRAY)
-        if rppg_hr.sqi is None or rppg_hr.sqi < vs.RppgHeartRate.GOOD_SQI:
+        if rppg_hr.sqi is None or rppg_hr.sqi <= vs.RppgHeartRate.GOOD_SQI:   # good only when SQI > GOOD_SQI
             quality = f" (quality {rppg_hr.sqi:.2f})" if rppg_hr.sqi is not None else ""
             return "weak", ("Weak signal, hold still" + quality, vs.YELLOW)
         return "good", (f"Signal good (quality {rppg_hr.sqi:.2f})", vs.GREEN)
@@ -595,6 +596,7 @@ def processing_loop(args, shared, stop, source):
                 hr_source=hr_source,
                 heart_snr_db=_num(s.heart.snr_db) if rppg_hr is None else None,
                 signal_quality=_num(rppg_hr.sqi) if rppg_hr is not None else None,
+                signal_quality_threshold=vs.RppgHeartRate.GOOD_SQI,
                 breathing_rate=_num(resp_rate),
                 breathing_channel=s.breathing.channel_name if resp_rate is not None else None,
                 blink_rate=_num(blink_rate),

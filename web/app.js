@@ -497,6 +497,9 @@ function renderQuality(barsId, textId, d) {
 // whose own quality measure is below its pass line, and it is shown as such.
 
 const BASE_NAMES = { heart: "heart rate", breath: "breathing", blink: "blinks" };
+// Heart signal pass line, as the server classifies it: good only when quality > this value.
+const sqiPass = () => (app.last && typeof app.last.signal_quality_threshold === "number" ? app.last.signal_quality_threshold : null);
+const passText = () => (sqiPass() === null ? "its pass line" : `its ${sqiPass().toFixed(2)} pass line`);
 const cap = (s) => (s ? s[0].toUpperCase() + s.slice(1) : s);
 
 function metricStatus(d) {
@@ -509,7 +512,7 @@ function metricStatus(d) {
   if (!face) heart = { state: "none", text: "no face in view" };
   else if (d.heart_rate === null) heart = { state: "collecting", text: "measuring · about 10 s of steady signal" };
   else if (d.signal_status === "good") heart = { state: "reliable", text: `reliable · heart signal ${qText}` };
-  else heart = { state: "provisional", text: `provisional · heart signal ${qText}, below its pass line` };
+  else heart = { state: "provisional", text: `provisional · heart signal ${qText}, at or below ${passText()}` };
 
   let breath;
   const buf = dg.breathing_buffer_sec;
@@ -694,7 +697,7 @@ function renderLive(d) {
   $("hero-bpm").classList.toggle("provisional", provisional);
   let delta;
   if (hr === null) delta = st.heart.text[0].toUpperCase() + st.heart.text.slice(1);
-  else if (provisional) delta = `Provisional: heart signal below its pass line`;
+  else if (provisional) delta = `Provisional: heart signal at or below ${passText()}`;
   else if (b.heart_rate !== null) {
     const diff = Math.round(hr - b.heart_rate);
     delta = diff === 0 ? `At your baseline of ${b.heart_rate.toFixed(0)}`
@@ -702,6 +705,7 @@ function renderLive(d) {
   } else delta = app.quick ? "No baseline in a 45 s quick read" : cap(baselineText(d, "heart", 0, "bpm") || "Baseline learning");
   $("hero-delta").textContent = delta;
   renderQuality("hero-q", "hero-q-text", d);
+  $("pass-line").textContent = sqiPass() === null ? "" : `Good above ${sqiPass().toFixed(2)}`;
   // the heart and its ring only animate on a reliable reading
   setHeartBeat(reliable ? hr : null);
   renderHalo(reliable || provisional ? d.pulse_wave : null);
@@ -996,7 +1000,7 @@ function renderCharts() {
     const samples = app.history.map((s) => ({ t: s.t, state: s.state, ...SERIES[key](s) }));
     const drawn = chart(svgEl, samples, {
       key, baseline: base ?? null, bands: key !== "quality",
-      fixed: key === "quality" ? [0, 1] : null, pass: key === "quality" && hasQualityScale() ? 0.5 : null,
+      fixed: key === "quality" ? [0, 1] : null, pass: key === "quality" && hasQualityScale() ? sqiPass() : null,
     });
     if (!drawn) {
       tip.hidden = true;
@@ -1009,7 +1013,7 @@ function renderCharts() {
   }
 }
 
-// rPPG reports a 0–1 quality with a 0.50 pass line; colour mode reports SNR instead.
+// rPPG reports a 0–1 quality (good above the server's pass line); colour mode reports SNR instead.
 const hasQualityScale = () => app.history.some((s) => s.q !== null);
 
 function emptyChartText(key) {
@@ -1088,7 +1092,7 @@ function renderSummary() {
   } else if (S.blinkLast) {
     setOv("ov-bl", `≈${S.blinkLast.blink.toFixed(0)}`, "Last count covered under 60 s", false, ["Provisional", "warn"]);
   } else setOv("ov-bl", "--", "No blink-rate readings", true, ["Unavailable", "na"]);
-  setOv("ov-q", pctText(S.hrRel.length, S.n), S.qMean === null ? "Of seconds with readings" : `Of seconds with readings · mean quality ${S.qMean.toFixed(2)} (pass 0.50)`, !S.n,
+  setOv("ov-q", pctText(S.hrRel.length, S.n), S.qMean === null ? "Of seconds with readings" : `Of seconds with readings · mean quality ${S.qMean.toFixed(2)}${sqiPass() === null ? "" : ` (good above ${sqiPass().toFixed(2)})`}`, !S.n,
     !S.n ? ["No data", "na"] : relPct >= 0.6 ? ["Good", "ok"] : ["Often weak", "warn"]);
   if (S.judged.length) {
     setOv("ov-c", String(Math.round(S.calm / S.judged.length * 100)), `Of ${S.judged.length} judged seconds within baseline · ${app.events.length} elevated moment${app.events.length === 1 ? "" : "s"}`, false,
@@ -1157,6 +1161,7 @@ function renderSummary() {
   ].sort((a, b2) => a.t - b2.t);
   $("sum-events").replaceChildren(...moments.map((m) => m.node));
   $("sum-events-empty").hidden = moments.length > 0;
+  $("q-plot-meta").textContent = `0 to 1 · heart rate counts as reliable only above ${passText().replace(/^its /, "the ")}`;
   renderCharts();
 }
 
@@ -1180,7 +1185,7 @@ function findings(S, b) {
   if (S.hrRel.length) {
     out.push([relShare >= 0.6 ? "ok" : "warn", ["Heart rate", `was reliable for ${pctText(S.hrRel.length, S.n)} of the session, averaging ${S.hrMean.toFixed(0)} bpm.`]]);
   } else if (S.hrAll.length) {
-    out.push(["bad", ["Heart rate", `was never reliable: the heart signal stayed below its 0.50 pass line${S.qMean !== null ? ` (mean ${S.qMean.toFixed(2)})` : ""}. Even light from the front usually helps.`]]);
+    out.push(["bad", ["Heart rate", `was never reliable: the heart signal never rose above ${passText()}${S.qMean !== null ? ` (mean ${S.qMean.toFixed(2)})` : ""}. Even light from the front usually helps.`]]);
   } else out.push(["bad", ["Heart rate", "was not measured."]]);
   if (S.hrAll.length > S.hrRel.length && S.hrRel.length) {
     out.push(["warn", ["Weak-signal seconds", `(${S.hrAll.length - S.hrRel.length} s) are drawn dotted and left out of the average.`]]);

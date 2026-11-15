@@ -236,7 +236,7 @@
               <span class="mono">Heart signal</span>
               <div class="qbars" id="hero-q" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></div>
               <b id="hero-q-text" class="mono">--</b>
-              <span class="mono pass">Pass line 0.50</span>
+              <span class="mono pass" id="pass-line"></span>
             </div>
           </div>
 
@@ -324,7 +324,7 @@
             <p class="plot-stats mono" data-stats="blink_rate"></p>
           </figure>
           <figure class="plot" data-plot="quality">
-            <figcaption><span class="plot-t">Heart signal quality</span><span class="meta">0 to 1 · heart rate counts as reliable above the 0.50 pass line</span></figcaption>
+            <figcaption><span class="plot-t">Heart signal quality</span><span class="meta" id="q-plot-meta">0 to 1 · heart rate counts as reliable above the pass line</span></figcaption>
             <div class="chart-wrap"><svg class="chart short" data-trend="quality" role="img" aria-label="Heart signal quality over this session"></svg><div class="tip-box" hidden></div></div>
           </figure>
         </div>

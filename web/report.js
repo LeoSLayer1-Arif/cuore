@@ -316,7 +316,7 @@ function drawReport(r, m) {
     ["Heart rate", "heart_rate", RC.heart, "bpm", "Solid = reliable · dashed = provisional (weak signal) · grey dashed line = baseline · shaded = elevated"],
     ["Breathing", "breathing_rate", RC.breath, "/min", "Each reading averages the previous 30 s · gaps = no reading"],
     ["Blinks", "blink_rate", RC.blink, "/min", "Solid = counted over a full 60 s · dashed = counted over less (provisional)"],
-    ["Heart signal quality", "quality", RC.ink2, "", "0 to 1 · heart rate counts as reliable above the 0.50 pass line (green)"],
+    ["Heart signal quality", "quality", RC.ink2, "", `0 to 1 · heart rate counts as reliable only above ${passText().replace(/^its /, "the ")} (green)`],
   ];
   for (const [title, key, color, unit, note] of charts) {
     const ch = key === "quality" ? 92 : 118;
@@ -352,9 +352,9 @@ function drawReport(r, m) {
   y += 28;
   const notes = [
     ["Reliable", "The value passed its own quality check. Only reliable heart-rate seconds are averaged."],
-    ["Provisional", "The estimator produced a value but its quality was below the pass line (heart rate), or the count covered less than its full window (blinks). Shown, labelled, never averaged as reliable."],
+    ["Provisional", "The estimator produced a value but its quality was at or below the pass line (heart rate), or the count covered less than its full window (blinks). Shown, labelled, never averaged as reliable."],
     ["Unavailable", "No reading: not enough signal yet, quality too low (breathing), or the face was out of view. Left blank, never filled in."],
-    ["Heart rate", "Remote photoplethysmography (rPPG): a neural model (FacePhys, via open-rppg) recovers the pulse wave from skin-colour changes. 10 s window, updated each second; reliable when signal quality is at least 0.50."],
+    ["Heart rate", `Remote photoplethysmography (rPPG): a neural model (FacePhys, via open-rppg) recovers the pulse wave from skin-colour changes. 10 s window, updated each second; reliable only when signal quality is above ${sqiPass() === null ? "its pass line" : sqiPass().toFixed(2)}.`],
     ["Breathing", "Dense optical flow (Farnebäck) on the chest and shoulders below the chin, or head motion as a fallback. 30 s window, needs 20 s; shown only when the breathing peak is at least -3 dB above the noise."],
     ["Blinks", "Eye aspect ratio from 478 face landmarks; a blink is a short drop below 75 % of your open level. Counted over the last 60 s; provisional until the full window is counted."],
     ["Composure", "A comparison with your own baselines, not a measure of stress. Elevated when blinks fall below 60 % of baseline (and at least 3/min lower), or when two of these happen together: heart rate +15 %, breathing +25 %, fewer blinks."],
@@ -423,9 +423,10 @@ function reportChart(r, x, y, w, h, key, color, unit, b) {
     r.line(x + pad.l, Y(base), x + w - pad.r, Y(base), { color: RC.muted, width: 0.6, dash: [3, 3] });
     r.text(`Baseline ${base.toFixed(DIGITS[key])}`, x + w - pad.r - 3, Y(base) - 3, { size: 6.5, font: "mono", color: RC.ink2, align: "right" });
   }
-  if (key === "quality" && hasQualityScale()) {
-    r.line(x + pad.l, Y(0.5), x + w - pad.r, Y(0.5), { color: RC.good, width: 0.6, dash: [3, 3] });
-    r.text("Pass line 0.50", x + w - pad.r - 3, Y(0.5) - 3, { size: 6.5, font: "mono", color: RC.good, align: "right" });
+  const pass = sqiPass();
+  if (key === "quality" && hasQualityScale() && pass !== null) {
+    r.line(x + pad.l, Y(pass), x + w - pad.r, Y(pass), { color: RC.good, width: 0.6, dash: [3, 3] });
+    r.text(`Pass line ${pass.toFixed(2)}`, x + w - pad.r - 3, Y(pass) - 3, { size: 6.5, font: "mono", color: RC.good, align: "right" });
   }
   let run = [], prov = null, prev = null;
   const flush = () => { if (run.length > 1) r.poly(run, { color, width: prov ? 0.9 : 1.3, dash: prov ? [1.5, 2] : null }); run = []; };
