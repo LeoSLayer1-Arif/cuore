@@ -2,7 +2,7 @@
 
 Camera-based heart rate, breathing rate, blink rate and a heuristic stress score. It reads the tiny color changes that blood flow causes in facial skin (remote photoplethysmography, rPPG). It works on a webcam or on a region of your screen, such as a Zoom tile.
 
-**Status:** written and reviewed, but not yet run on a real webcam. Expect small fixes during the first hour. It is a screening demo, not a medical device.
+**Status:** Works really well and was awarded HackUmass XIV Winner— Best MedTech Hack. It is not a diagnosis and one should always refer to a medical professional before taking any action.
 
 ## Project structure
 
