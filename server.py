@@ -534,7 +534,7 @@ def processing_loop(args, shared, stop, source):
                 ticked = True
                 if rppg_hr is None:
                     s.bpm = s.heart.update()
-                s.resp_rate = s.breathing.update()
+                s.resp_rate = s.breathing.update(now)    # no reading once the face is gone
                 s.blink_rate = s.blinks.rate_per_min(now)
             if rppg_hr is not None:
                 s.bpm = rppg_hr.update(now)          # updates itself once a second

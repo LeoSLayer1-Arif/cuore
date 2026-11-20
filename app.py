@@ -956,7 +956,7 @@ def main():
                 last_update = now
                 if rppg_hr is None:
                     bpm = heart.update()
-                resp_rate = breathing.update()
+                resp_rate = breathing.update(now)    # no reading once the face is gone
                 blink_rate = blinks.rate_per_min(now)
             if rppg_hr is not None:
                 bpm = rppg_hr.update(now)            # updates itself once a second
