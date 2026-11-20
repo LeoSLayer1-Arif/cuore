@@ -521,13 +521,14 @@ function metricStatus(d) {
 
   let breath;
   const buf = dg.breathing_buffer_sec;
-  if (d.breathing_rate !== null) {
+  if (!face) breath = { state: "none", text: "paused · no face in view" };
+  else if (d.breathing_rate !== null) {
     const conf = dg.breathing_snr_db !== null && dg.breathing_snr_db !== undefined ? ` · confidence ${dg.breathing_snr_db.toFixed(1)} dB` : "";
+    // head motion is only the fallback when the shoulders aren't in view: shown, but provisional
     breath = d.breathing_channel === "head"
-      ? { state: "reliable", text: `from head motion${conf} · show your shoulders for a cleaner reading` }
+      ? { state: "provisional", text: `provisional · from head motion${conf} · show your shoulders for a reliable reading` }
       : { state: "reliable", text: `from chest motion${conf}` };
-  } else if (!face) breath = { state: "none", text: "paused · no face in view" };
-  else if (buf !== undefined && buf !== null && buf < 20) breath = { state: "collecting", text: `collecting · ${Math.floor(buf)} of 20 s` };
+  } else if (buf !== undefined && buf !== null && buf < 20) breath = { state: "collecting", text: `collecting · ${Math.floor(buf)} of 20 s` };
   else if (buf !== undefined && buf !== null) breath = { state: "unavailable", text: "temporarily unavailable · breathing motion not clear enough" };
   else breath = { state: "collecting", text: "collecting · about 20 s" };
 
@@ -580,7 +581,7 @@ function renderCalibration(d) {
     camera: app.source === "browser" ? Date.now() - app.lastFrameOk < 2000 : fresh,
     face: d.face_found,
     heart: st.heart.state === "reliable" || st.heart.state === "provisional",
-    breath: st.breath.state === "reliable",
+    breath: st.breath.state === "reliable" || st.breath.state === "provisional",
     blink: d.blink_rate !== null,
     signal: d.signal_status === "good",
   };
@@ -994,7 +995,7 @@ function chartLeave(svgEl, tip) {
 // What each report chart plots, taken straight from the session history.
 const SERIES = {
   heart_rate: (s) => ({ v: s.hr, prov: s.hrState !== "reliable" }),
-  breathing_rate: (s) => ({ v: s.br, prov: false }),
+  breathing_rate: (s) => ({ v: s.br, prov: s.brState !== "reliable" }),
   blink_rate: (s) => ({ v: s.blink, prov: !s.blinkFull }),
   quality: (s) => ({ v: s.q, prov: false }),
 };
@@ -1045,7 +1046,8 @@ function summaryData() {
   const hrAll = H.filter((s) => s.hr !== null);
   const hrRel = hrAll.filter((s) => s.hrState === "reliable");
   const hrAvg = avgSamples();
-  const br = H.filter((s) => s.br !== null);
+  const brAll = H.filter((s) => s.br !== null);
+  const br = brAll.filter((s) => s.brState === "reliable");   // head-motion readings are provisional
   const blink = H.filter((s) => s.blink !== null);
   const blinkFull = blink.filter((s) => s.blinkFull);
   const qs = H.filter((s) => s.q !== null);
@@ -1054,7 +1056,7 @@ function summaryData() {
   return {
     n, face: H.filter((s) => s.face).length,
     hrAll, hrRel, hrAvg, hrMean: meanOfKey(hrAvg, "hr"), hrRange: range(hrAvg, "hr"),
-    br, brMean: meanOfKey(br, "br"), brRange: range(br, "br"),
+    brAll, br, brMean: meanOfKey(br, "br"), brRange: range(br, "br"),
     blink, blinkFull, blinkLast: blink.length ? blink[blink.length - 1] : null, blinkFullMean: meanOfKey(blinkFull, "blink"),
     qMean: meanOfKey(qs, "q"),
     judged, calm: judged.filter((s) => s.state === "calm").length,
@@ -1094,9 +1096,9 @@ function renderSummary() {
     S.hrMean === null,
     S.hrMean === null ? (S.hrRel.length ? ["Calibration only", "warn"] : S.hrAll.length ? ["Provisional only", "warn"] : ["Unavailable", "na"]) : relPct >= 0.6 ? ["Reliable", "ok"] : ["Partly reliable", "warn"]);
   setOv("ov-br", S.brMean === null ? "--" : S.brMean.toFixed(1),
-    S.brMean === null ? (app.quick ? "Needs 20 s of steady signal" : "No breathing readings")
+    S.brMean === null ? (S.brAll.length ? `${S.brAll.length} s of head-motion readings only; not averaged` : app.quick ? "Needs 20 s of steady signal" : "No breathing readings")
       : `${S.br.length} s of readings · range ${S.brRange[0].toFixed(1)}–${S.brRange[1].toFixed(1)}` + (b.breathing_rate != null ? ` · baseline ${b.breathing_rate.toFixed(1)}` : ""),
-    S.brMean === null, S.brMean === null ? ["Unavailable", "na"] : ["Measured", "ok"]);
+    S.brMean === null, S.brMean === null ? (S.brAll.length ? ["Provisional only", "warn"] : ["Unavailable", "na"]) : ["Measured", "ok"]);
   if (S.blinkFull.length) {
     setOv("ov-bl", S.blinkFullMean.toFixed(0), `Average of full 60 s counts (${S.blinkFull.length} s)` + (b.blink_rate != null ? ` · baseline ${b.blink_rate.toFixed(0)}` : ""), false, ["Full 60 s window", "ok"]);
   } else if (S.blinkLast) {
@@ -1132,7 +1134,7 @@ function renderSummary() {
   // availability strips
   const rows = [
     ["Heart rate", app.history.map((s) => (s.hr === null ? "none" : s.hrState === "reliable" ? "rel" : "prov")), S.hrRel.length],
-    ["Breathing", app.history.map((s) => (s.br === null ? "none" : "rel")), S.br.length],
+    ["Breathing", app.history.map((s) => (s.br === null ? "none" : s.brState === "reliable" ? "rel" : "prov")), S.br.length],
     ["Blinks", app.history.map((s) => (s.blink === null ? "none" : s.blinkFull ? "rel" : "prov")), S.blinkFull.length],
     ["Face", app.history.map((s) => (s.face ? "rel" : "none")), S.face],
   ];
@@ -1150,7 +1152,7 @@ function renderSummary() {
   // per-chart stats lines
   const statLine = {
     heart_rate: S.hrAll.length ? `${S.hrRel.length} reliable s · ${S.hrAll.length - S.hrRel.length} provisional s · ${S.n - S.hrAll.length} s without a reading` : "",
-    breathing_rate: S.br.length ? `${S.br.length} s with a reading · ${S.n - S.br.length} s without` : "",
+    breathing_rate: S.brAll.length ? `${S.br.length} reliable s · ${S.brAll.length - S.br.length} provisional s (head motion) · ${S.n - S.brAll.length} s without a reading` : "",
     blink_rate: S.blink.length ? `${S.blinkFull.length} s counted over a full 60 s · ${S.blink.length - S.blinkFull.length} s provisional` : "",
   };
   for (const el of document.querySelectorAll("[data-stats]")) el.textContent = statLine[el.dataset.stats] || "";
@@ -1203,7 +1205,11 @@ function findings(S, b) {
     out.push(["warn", ["Weak-signal seconds", `(${S.hrAll.length - S.hrRel.length} s) are drawn dotted and left out of the average.`]]);
   }
   if (S.br.length) out.push(["ok", ["Breathing", `was measured for ${pctText(S.br.length, S.n)} of the session, averaging ${S.brMean.toFixed(1)} breaths/min.`]]);
+  else if (S.brAll.length) out.push(["warn", ["Breathing", "came only from head motion (shoulders not in view), so it was provisional and isn't averaged."]]);
   else out.push([app.quick ? "warn" : "bad", ["Breathing", app.quick ? "needs 20 s of steady signal; none passed its check in this quick read." : "never passed its quality check (chest motion not clear enough)."]]);
+  if (S.br.length && S.brAll.length > S.br.length) {
+    out.push(["warn", ["Head-motion seconds", `(${S.brAll.length - S.br.length} s) of breathing are drawn dotted and left out of the average.`]]);
+  }
   if (S.blinkFull.length) out.push(["ok", ["Blinks", `averaged ${S.blinkFullMean.toFixed(0)}/min over full 60 s windows.`]]);
   else if (S.blinkLast) out.push(["warn", ["Blinks", `≈${S.blinkLast.blink.toFixed(0)}/min, counted over less than 60 s, so provisional.`]]);
   else out.push(["bad", ["Blinks", "were not counted."]]);
@@ -1246,7 +1252,7 @@ function historySample(d) {
     inAvg: d.heart_in_average === true,          // server: after the 10 s calibration and good signal
     elapsed: d.session && typeof d.session.elapsed === "number" ? d.session.elapsed : null,
     q: d.signal_quality ?? null,
-    br: d.breathing_rate,
+    br: d.breathing_rate, brState: st.breath.state,
     blink: d.blink_rate, blinkFull: st.blink.state === "reliable",
     state: d.composure.state,
   };

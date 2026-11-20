@@ -584,16 +584,23 @@ def processing_loop(args, shared, stop, source):
             # 6/min), so only full-window blink rates go into the baseline.
             blink_window_full = (s.blinks.start is not None
                                  and now - s.blinks.start >= s.blinks.window_sec)
+            # Reliable readings only. Provisional ones (a weak heart signal, breathing from
+            # head motion because the shoulders aren't in view) are shown, but they never go
+            # into a baseline or the composure comparison.
+            heart_ok = live_bpm if status_code == "good" else None
+            breath_ok = (resp_rate if (resp_rate is not None and face_found
+                                       and s.breathing.channel_name == "chest") else None)
             if ticked:
                 # Each baseline takes a sample only when ITS OWN existing validity rule passes:
                 #   heart:  a live reading with the heart signal "good" (unchanged rule)
-                #   breath: the breathing estimator produced a rate (its own 20 s + confidence
-                #           checks), with a face in view; no longer blocked by a weak heart signal
+                #   breath: the breathing estimator produced a rate from chest motion (its own
+                #           20 s + confidence checks), with a face in view; no longer blocked
+                #           by a weak heart signal
                 #   blink:  a full 60 s blink window with a face in view (unchanged rule)
                 s.baseline.add(
                     now,
-                    heart=live_bpm if status_code == "good" else None,
-                    breath=resp_rate if (resp_rate is not None and face_found) else None,
+                    heart=heart_ok,
+                    breath=breath_ok,
                     blink=blink_rate if (blink_window_full and face_found) else None,
                 )
                 s.face_ticks.append((now, face_found))
@@ -601,7 +608,7 @@ def processing_loop(args, shared, stop, source):
                     s.face_ticks.popleft()
             composure = evaluate_composure(
                 s.baseline.mean("blink"), s.baseline.mean("breath"), s.baseline.mean("heart"),
-                blink_rate, resp_rate, live_bpm)
+                blink_rate, breath_ok, heart_ok)
 
             if shared.current_session() != s.id:
                 continue          # a new session started mid-frame; don't publish stale values

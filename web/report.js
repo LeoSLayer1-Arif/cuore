@@ -267,7 +267,7 @@ function drawReport(r, m) {
   const H_ = app.history, n = Math.max(1, H_.length);
   const rows = [
     ["Heart rate", (s) => (s.hr === null ? "none" : s.hrState === "reliable" ? "rel" : "prov"), m.S.hrRel.length],
-    ["Breathing", (s) => (s.br === null ? "none" : "rel"), m.S.br.length],
+    ["Breathing", (s) => (s.br === null ? "none" : s.brState === "reliable" ? "rel" : "prov"), m.S.br.length],
     ["Blinks", (s) => (s.blink === null ? "none" : s.blinkFull ? "rel" : "prov"), m.S.blinkFull.length],
     ["Face in view", (s) => (s.face ? "rel" : "none"), m.S.face],
     ["Composure", (s) => (s.state === "calm" ? "calm" : s.state === "elevated" ? "elev" : "none"), m.S.judged.length],
@@ -304,7 +304,7 @@ function drawReport(r, m) {
   }
   r.line(M, y + 6, W - M, y + 6, { color: RC.line, width: 0.5 });
   y += 14;
-  wrapText(r, "Each baseline is ready once 60 s have passed since that measurement's first valid reading and at least 30 s of valid readings were collected. Composure needs two or more ready baselines.", CW, 8, "sans")
+  wrapText(r, "Each baseline is ready once 60 s have passed since that measurement's first valid reading and at least 30 s of valid readings were collected. Composure compares only reliable readings: it is calm only when two or more measurements can be compared with a ready baseline, while a large drop in blinks counts as elevated on its own.", CW, 8, "sans")
     .forEach((l) => { r.text(l, M, y + 8, { size: 8, color: RC.muted }); y += 10.5; });
 
   // ---- page 2: trends
@@ -314,7 +314,7 @@ function drawReport(r, m) {
   y += 26;
   const charts = [
     ["Heart rate", "heart_rate", RC.heart, "bpm", "Solid = reliable · dashed = provisional (weak signal) · grey dashed line = baseline · shaded = elevated"],
-    ["Breathing", "breathing_rate", RC.breath, "/min", "Each reading averages the previous 30 s · gaps = no reading"],
+    ["Breathing", "breathing_rate", RC.breath, "/min", "Each reading averages the previous 30 s · dashed = provisional (head motion) · gaps = no reading"],
     ["Blinks", "blink_rate", RC.blink, "/min", "Solid = counted over a full 60 s · dashed = counted over less (provisional)"],
     ["Heart signal quality", "quality", RC.ink2, "", `0 to 1 · heart rate counts as reliable only above ${passText().replace(/^its /, "the ")} (green)`],
   ];
@@ -352,10 +352,10 @@ function drawReport(r, m) {
   y += 28;
   const notes = [
     ["Reliable", "The value passed its own quality check. Only reliable heart-rate seconds after the first 10 s calibration are averaged."],
-    ["Provisional", "The estimator produced a value but its quality was at or below the pass line (heart rate), or the count covered less than its full window (blinks). Shown, labelled, never averaged as reliable."],
+    ["Provisional", "The estimator produced a value but its quality was at or below the pass line (heart rate), it came from head motion because the shoulders weren't in view (breathing), or the count covered less than its full window (blinks). Shown, labelled, never averaged as reliable."],
     ["Unavailable", "No reading: not enough signal yet, quality too low (breathing), or the face was out of view. Left blank, never filled in."],
     ["Heart rate", `Remote photoplethysmography (rPPG): a neural model (FacePhys, via open-rppg) recovers the pulse wave from skin-colour changes. 10 s window, updated each second; reliable only when signal quality is above ${sqiPass() === null ? "its pass line" : sqiPass().toFixed(2)}.`],
-    ["Breathing", "Dense optical flow (Farnebäck) on the chest and shoulders below the chin, or head motion as a fallback. 30 s window, needs 20 s; shown only when the breathing peak is at least -3 dB above the noise."],
+    ["Breathing", "Dense optical flow (Farnebäck) on the chest and shoulders below the chin, or head motion as a provisional fallback when the shoulders aren't in view. 5.1 to 36 breaths/min, 30 s window, needs 20 s; shown only when the breathing peak is at least -3 dB above the noise."],
     ["Blinks", "Eye aspect ratio from 478 face landmarks; a blink is a short drop below 75 % of your open level. Counted over the last 60 s; provisional until the full window is counted."],
     ["Composure", "A comparison with your own baselines, not a measure of stress. Elevated when blinks fall below 60 % of baseline (and at least 3/min lower), or when two of these happen together: heart rate +15 %, breathing +25 %, fewer blinks."],
   ];
@@ -474,7 +474,7 @@ function reportCsv() {
     s.q === null ? null : Number(s.q.toFixed(3)),
     s.inAvg ? 1 : 0,                         // 0 during the first 10 s calibration or with a weak signal
     s.br === null ? null : Number(s.br.toFixed(1)),
-    s.br === null ? "no_reading" : "measured",
+    s.br === null ? "no_reading" : s.brState === "reliable" ? "measured" : "provisional",
     s.blink === null ? null : Number(s.blink.toFixed(1)),
     s.blink === null ? "no_reading" : s.blinkFull ? "full_60s_window" : "provisional",
     COMPOSURE[s.state] || "no_reading",
