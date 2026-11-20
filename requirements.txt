@@ -1,7 +1,10 @@
 # Pinned to the versions CUORE is tested with (Python 3.12).
 # requirements.lock lists every installed package, including dependencies.
 mediapipe==1.2.3
+# MediaPipe needs opencv-contrib-python and open-rppg needs opencv-python. Both install
+# the same cv2 folder, so they must be the same version or the files get mixed.
 opencv-python==5.0.0.93
+opencv-contrib-python==5.0.0.93
 numpy==2.5.4
 scipy==1.18.1
 mss==10.2.0
