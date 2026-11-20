@@ -12,10 +12,13 @@ Usage:
     python app.py --camera 1 --backend msmf      # use Windows Media Foundation instead of DirectShow
     python app.py --screen 100 100 640 480       # read a region of the screen (e.g. a Zoom tile)
     python app.py --avg-seconds 90               # average heart rate over 90 s instead of 120 s
+    python app.py --record session.csv           # save per-frame signals for replay.py
 
 Press q or Esc to quit. Press r to restart the average heart rate recording.
+While recording, press m to mark a moment (e.g. when you read a pulse oximeter).
 """
 import argparse
+import csv
 import os
 import sys
 import threading
@@ -87,6 +90,8 @@ def parse_args():
                         help="open-rppg model name, e.g. FacePhys.rlap, ME-flow.rlap, PhysFormer.pure")
     parser.add_argument("--avg-seconds", type=float, default=120,
                         help="how many seconds of heart rate readings the average uses (default 120)")
+    parser.add_argument("--record", metavar="CSV",
+                        help="save raw per-frame signals for offline replay with replay.py (press m to mark)")
     args = parser.parse_args()
     if args.avg_seconds < 10:
         parser.error("--avg-seconds must be at least 10")
@@ -876,6 +881,13 @@ def main():
     chest = ChestMotion()
     motion = MotionPulseTracker()                # head and neck movement (experimental)
     average = AverageBpmMonitor(args.avg_seconds)
+    recorder = record_file = None
+    mark_next = False
+    if args.record:                              # the columns replay.py reads
+        record_file = open(args.record, "w", newline="")
+        recorder = csv.writer(record_file)
+        recorder.writerow(["t"] + [f"{c}{r}" for r in range(3) for c in "rgb"]
+                          + ["chest", "head", "mark"])
 
     t0 = None
     last_timestamp_ms = -1
@@ -920,15 +932,19 @@ def main():
                             region_polygon(points, LEFT_CHEEK),
                             region_polygon(points, RIGHT_CHEEK)]
                 # Sample colors before drawing anything on the frame.
-                if rppg_hr is None:
+                if rppg_hr is None or recorder is not None:   # a recording keeps them for replay.py
                     colors = [region_mean_rgb(frame, polygon) for polygon in polygons]
-                    if all(c is not None for c in colors):
+                    if rppg_hr is None and all(c is not None for c in colors):
                         heart.add(now, np.concatenate(colors))
 
                 gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
                 chest_y = chest.update(gray, points)
                 head_y = float(points[:, 1].mean())
                 breathing.add(now, [chest_y, head_y])
+                if recorder is not None and all(c is not None for c in colors):
+                    recorder.writerow([f"{now:.4f}"] + [f"{v:.4f}" for c in colors for v in c]
+                                      + [f"{chest_y:.4f}", f"{head_y:.4f}", int(mark_next)])
+                    mark_next = False
 
                 ear = (eye_aspect_ratio(points, LEFT_EYE) + eye_aspect_ratio(points, RIGHT_EYE)) / 2
                 blinks.update(now, ear)
@@ -1016,7 +1032,11 @@ def main():
                 break
             if key == ord("r"):
                 average.reset()
+            if key == ord("m"):
+                mark_next = True                     # the next recorded row is marked
     finally:
+        if record_file is not None:
+            record_file.close()
         source.release()
         if rppg_hr is not None:
             rppg_hr.close()
